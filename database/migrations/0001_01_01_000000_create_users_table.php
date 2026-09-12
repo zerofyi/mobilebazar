@@ -13,12 +13,39 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('store_id')->nullable()->index();
+
+            $table->string('role')->default('customer');
+
             $table->string('name');
             $table->string('email')->unique();
+            $table->string('mobile')->nullable()->unique();
+            $table->string('avatar')->nullable();
+
+            $table->boolean('is_active')->default(true);
+            $table->boolean('is_suspended')->default(false);
+
             $table->timestamp('email_verified_at')->nullable();
+            $table->timestamp('mobile_verified_at')->nullable();
             $table->string('password');
+
+            $table->foreignId('parent_id')->nullable()->constrained('users')->nullOnDelete();
+
+            $table->unsignedInteger('failed_login_attempts')->default(0);
+            $table->timestamp('locked_until')->nullable();
+            $table->timestamp('last_login_at')->nullable();
+            $table->string('last_login_ip', 45)->nullable();
+
             $table->rememberToken();
+            $table->softDeletes();
             $table->timestamps();
+
+            $table->index(['store_id', 'role', 'is_active', 'is_suspended'], 'idx_users_store_role_status');
+            $table->index(['role', 'is_active', 'is_suspended', 'deleted_at'], 'idx_users_role_status');
+            $table->index(['parent_id', 'deleted_at'], 'idx_users_parent_deleted');
+            $table->index(['locked_until', 'is_suspended'], 'idx_users_lockout_check');
+            $table->index(['last_login_at'], 'idx_users_last_login');
         });
 
         Schema::create('password_reset_tokens', function (Blueprint $table) {
