@@ -5,6 +5,8 @@ import { initializeTheme } from '@/hooks/use-appearance';
 import AppLayout from '@/layouts/app-layout';
 import AuthLayout from '@/layouts/auth-layout';
 import SettingsLayout from '@/layouts/settings/layout';
+import OfflineToast from './components/special/offline-toast';
+import AppBillingLayout from './layouts/app-billing-layout';
 
 const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
 
@@ -16,6 +18,8 @@ void createInertiaApp({
                 return null;
             case name.startsWith('auth/'):
                 return AuthLayout;
+            case name.startsWith('Billing/'):
+                return AppBillingLayout;
             case name.startsWith('settings/'):
                 return [AppLayout, SettingsLayout];
             default:
@@ -27,7 +31,7 @@ void createInertiaApp({
         return (
             <TooltipProvider delayDuration={0}>
                 {app}
-                <Toaster />
+                <OfflineToast />
             </TooltipProvider>
         );
     },

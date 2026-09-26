@@ -17,7 +17,7 @@ use Zerofyi\Media\Traits\HasAssets;
     'store_id',
     'title',
     'image_path',
-    'image_asset_id',
+    // 'image_asset_id',
     'url_type',
     'url',
     'position',
@@ -38,11 +38,12 @@ class Banner extends Model
     protected function casts(): array
     {
         return [
-            'sort_order' => 'integer',
-            'is_active' => 'boolean',
-            'starts_at' => 'datetime',
-            'ends_at' => 'datetime',
-            'image_asset_id' => 'integer',
+            'store_id'       => 'integer',
+            'sort_order'     => 'integer',
+            'is_active'      => 'boolean',
+            'starts_at'      => 'datetime',
+            'ends_at'        => 'datetime',
+            // 'image_asset_id' => 'integer',
         ];
     }
 
@@ -51,8 +52,8 @@ class Banner extends Model
         return $this->belongsTo(Store::class);
     }
 
-    public function imageAsset(): BelongsTo
-    {
-        return $this->belongsTo(Asset::class, 'image_asset_id');
-    }
+    // public function imageAsset(): BelongsTo
+    // {
+    //     return $this->belongsTo(Asset::class, 'image_asset_id');
+    // }
 }

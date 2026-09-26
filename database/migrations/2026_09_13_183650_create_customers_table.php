@@ -16,7 +16,6 @@ return new class extends Migration
             $table->uuid('uuid')->unique();
 
             $table->foreignId('user_id')->nullable()->constrained('users')->nullOnDelete();
-            $table->foreignId('address_id')->nullable()->constrained('addresses')->nullOnDelete();
 
             $table->string('status', 30)->default('active');
             $table->string('name');
@@ -34,6 +33,7 @@ return new class extends Migration
             $table->decimal('total_spent', 12, 2)->default(0.00);
 
             $table->boolean('is_verified')->default(false);
+            $table->text('address_snapshot')->nullable();
             $table->softDeletes();
             $table->timestamps();
 

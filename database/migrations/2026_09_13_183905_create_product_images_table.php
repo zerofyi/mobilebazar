@@ -15,9 +15,6 @@ return new class extends Migration
             $table->foreignId('product_id')->constrained('products')->cascadeOnDelete();
             $table->foreignId('product_variant_id')->nullable()->constrained('product_variants')->cascadeOnDelete();
 
-            // Bridge to zerofyi/media assets table
-            $table->foreignId('asset_id')->nullable()->constrained('assets')->nullOnDelete();
-
             // Denormalized paths for fast catalog reads
             $table->string('asset_path')->nullable();
             $table->string('thumb_path')->nullable();

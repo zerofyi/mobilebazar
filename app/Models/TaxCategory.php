@@ -12,7 +12,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable([
     'name',
     'tax_percent',
-    'is_inclusive',
 ])]
 class TaxCategory extends Model
 {
@@ -22,7 +21,6 @@ class TaxCategory extends Model
     {
         return [
             'tax_percent' => 'decimal:2',
-            'is_inclusive' => 'boolean',
         ];
     }
 

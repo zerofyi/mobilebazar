@@ -1,15 +1,23 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
+use App\Enums\UserRole;
+use App\Notifications\ResetPasswordEmail;
+use App\Notifications\VerifyEmail;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -19,33 +27,6 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
 use Spatie\Permission\Traits\HasRoles;
 use Zerofyi\Media\Traits\HasAssets;
 
-/**
- * @property int $id
- * @property string $uuid
- * @property int|null $store_id
- * @property string $role
- * @property string $name
- * @property string $email
- * @property string|null $mobile
- * @property string|null $avatar
- * @property bool $is_active
- * @property bool $is_suspended
- * @property \Illuminate\Support\Carbon|null $email_verified_at
- * @property \Illuminate\Support\Carbon|null $mobile_verified_at
- * @property string $password
- * @property int|null $parent_id
- * @property int $failed_login_attempts
- * @property \Illuminate\Support\Carbon|null $locked_until
- * @property \Illuminate\Support\Carbon|null $last_login_at
- * @property string|null $last_login_ip
- * @property string|null $two_factor_secret
- * @property string|null $two_factor_recovery_codes
- * @property \Illuminate\Support\Carbon|null $two_factor_confirmed_at
- * @property string|null $remember_token
- * @property \Illuminate\Support\Carbon|null $deleted_at
- * @property \Illuminate\Support\Carbon|null $created_at
- * @property \Illuminate\Support\Carbon|null $updated_at
- */
 #[Fillable([
     'uuid',
     'store_id',
@@ -71,35 +52,31 @@ use Zerofyi\Media\Traits\HasAssets;
     'two_factor_recovery_codes',
     'remember_token',
 ])]
-class User extends Authenticatable implements PasskeyUser
+class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
 {
-    use HasFactory,
+    use HasAssets,
+        HasFactory,
         HasRoles,
         HasUuids,
-        HasAssets,
         Notifiable,
         PasskeyAuthenticatable,
         SoftDeletes,
         TwoFactorAuthenticatable;
 
-    /**
-     * Specify the UUID target column for HasUuids trait.
-     *
-     * @return array<int, string>
-     */
     public function uniqueIds(): array
     {
         return ['uuid'];
     }
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
+    public function getRouteKeyName(): string
+    {
+        return 'uuid';
+    }
+
     protected function casts(): array
     {
         return [
+            'role' => UserRole::class,
             'is_active' => 'boolean',
             'is_suspended' => 'boolean',
             'email_verified_at' => 'datetime',
@@ -112,6 +89,29 @@ class User extends Authenticatable implements PasskeyUser
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
+
+    public function primaryStore(): BelongsTo
+    {
+        return $this->belongsTo(Store::class, 'store_id');
+    }
+
+    public function ownedStore(): HasOne
+    {
+        return $this->hasOne(Store::class, 'user_id');
+    }
+
+    public function stores(): BelongsToMany
+    {
+        return $this->belongsToMany(Store::class, 'store_users')
+            ->withPivot(['role', 'is_active', 'joined_at', 'base_salary', 'commission'])
+            ->withTimestamps();
+    }
+
     public function parent(): BelongsTo
     {
         return $this->belongsTo(User::class, 'parent_id');
@@ -122,15 +122,34 @@ class User extends Authenticatable implements PasskeyUser
         return $this->hasMany(User::class, 'parent_id');
     }
 
-    public function otps(): HasMany
+    public function addresses(): MorphMany
     {
-        return $this->hasMany(Otp::class, 'identifier', 'mobile');
+        return $this->morphMany(Address::class, 'addressable');
     }
 
-    public function devices(): HasMany
+    public function defaultAddress(): HasOne
     {
-        return $this->hasMany(UserDevice::class);
+        return $this->hasOne(Address::class, 'addressable_id')
+            ->where('addressable_type', static::class)
+            ->where('is_default', true);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Query Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true)->where('is_suspended', false);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers & Business Logic
+    |--------------------------------------------------------------------------
+    */
 
     public function isLocked(): bool
     {
@@ -142,20 +161,13 @@ class User extends Authenticatable implements PasskeyUser
         return $this->is_active && ! $this->is_suspended && ! $this->isLocked();
     }
 
-    public function ownedStore(): HasOne
+    public function sendEmailVerificationNotification(): void
     {
-        return $this->hasOne(Store::class, 'user_id');
+        $this->notify(new VerifyEmail());
     }
 
-    public function storeAssignments(): HasMany
+    public function sendPasswordResetNotification($token): void
     {
-        return $this->hasMany(StoreUser::class, 'user_id');
-    }
-
-    public function stores(): BelongsToMany
-    {
-        return $this->belongsToMany(Store::class, 'store_users')
-            ->withPivot(['role', 'is_active', 'joined_at', 'base_salary', 'commission'])
-            ->withTimestamps();
+        $this->notify(new ResetPasswordEmail($token));
     }
 }

@@ -17,23 +17,20 @@ return new class extends Migration
 
             $table->string('code', 20)->unique();
             $table->string('name');
-            $table->string('type')->default('franchise'); // 'own', 'franchise', 'warehouse', 'dark_store'
+            $table->string('type')->default('franchise'); // 'own', 'franchise', 'warehouse',
             $table->string('platform')->default('general');
 
             // Franchise Specifics & Security Override
-            $table->decimal('franchise_fee_per_unit', 10, 2)->nullable();
             $table->string('security_pin_hash')->nullable();
 
             // Plain-text / External Agreement ID (non-foreignId)
-            $table->string('agreement_id')->nullable()->index();
+            $table->string('franchise_agreement_id')->nullable()->index();
 
-            // Media Assets
-            $table->foreignId('image_asset_id')->nullable()->constrained('assets')->nullOnDelete(); // Store Establishment Photo
-            $table->foreignId('logo_asset_id')->nullable()->constrained('assets')->nullOnDelete();  // Added later by owner
-            $table->foreignId('signature_asset_id')->nullable()->constrained('assets')->nullOnDelete(); // Owner Digital Signature
+            $table->string('image_asset_path')->nullable();
+            $table->string('logo_asset_path')->nullable();
+            $table->string('signature_asset_path')->nullable();
 
             // Geographic Location & Address
-            $table->foreignId('address_id')->nullable()->constrained('addresses')->nullOnDelete();
             $table->string('location')->nullable();
 
             // Contact & Business Compliance
@@ -51,6 +48,8 @@ return new class extends Migration
             // Operational States
             $table->boolean('is_active')->default(true);
             $table->boolean('is_public')->default(true);
+            $table->boolean('is_gst_registered')->default(false);
+            $table->boolean('is_iws_allowed')->default(false); // IWS = Internal Wholesale System
 
             // Coordinates & Localization
             $table->decimal('lat', 10, 8)->nullable();

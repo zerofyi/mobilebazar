@@ -1,17 +1,30 @@
+export type UserRole = 'store' | 'admin' | 'zero';
+
 export type User = {
     id: number;
+    uuid: string;
+    store_id: number | null;
     name: string;
     email: string;
-    avatar?: string;
+    mobile: string | null;
+    role: UserRole;
+    avatar: string | null;
+    is_active: boolean;
+    is_suspended: boolean;
     email_verified_at: string | null;
-    two_factor_enabled?: boolean;
-    created_at: string;
-    updated_at: string;
+    mobile_verified_at: string | null;
+    parent_id: number | null;
+    created_at: string | null;
+    updated_at: string | null;
+
+    // Spatie Authorization Arrays
+    permissions: string[];
+    roles: string[];
     [key: string]: unknown;
 };
 
 export type Auth = {
-    user: User;
+    user: User | null;
 };
 
 export type Passkey = {

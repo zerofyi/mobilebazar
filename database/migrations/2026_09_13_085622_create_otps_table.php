@@ -18,6 +18,7 @@ return new class extends Migration
             $table->string('identifier')->index();
             $table->string('code_hash');
             $table->string('purpose')->default('login');
+            $table->ipAddress('ip_address')->nullable();
 
             $table->unsignedTinyInteger('attempts')->default(0);
             $table->timestamp('expires_at');

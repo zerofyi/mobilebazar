@@ -14,10 +14,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'product_variant_id',
     'quantity_on_hand',
     'quantity_reserved',
-    'rack_location',
-    'reorder_point',
-    'reorder_qty',
     'last_ledger_id_applied',
+    'last_unit_event_id_applied',
 ])]
 class StockSnapshot extends Model
 {
@@ -30,11 +28,16 @@ class StockSnapshot extends Model
             'product_variant_id' => 'integer',
             'quantity_on_hand' => 'integer',
             'quantity_reserved' => 'integer',
-            'reorder_point' => 'integer',
-            'reorder_qty' => 'integer',
             'last_ledger_id_applied' => 'integer',
+            'last_unit_event_id_applied' => 'integer',
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function store(): BelongsTo
     {
@@ -50,6 +53,17 @@ class StockSnapshot extends Model
     {
         return $this->belongsTo(StockLedger::class, 'last_ledger_id_applied');
     }
+
+    public function lastUnitEvent(): BelongsTo
+    {
+        return $this->belongsTo(StockUnitEvent::class, 'last_unit_event_id_applied');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors
+    |--------------------------------------------------------------------------
+    */
 
     public function getAvailableQuantityAttribute(): int
     {

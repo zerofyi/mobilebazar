@@ -22,7 +22,6 @@ return new class extends Migration
             $table->string('phone')->index();
             $table->string('email')->nullable();
 
-            $table->foreignId('address_id')->nullable()->constrained('addresses')->nullOnDelete();
             $table->string('gstin')->nullable()->index();
 
             $table->decimal('opening_balance', 12, 2)->default(0.00);

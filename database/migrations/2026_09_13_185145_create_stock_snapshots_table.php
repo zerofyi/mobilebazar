@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('stock_snapshots', function (Blueprint $table) {
@@ -17,14 +14,13 @@ return new class extends Migration
             $table->foreignId('store_id')->constrained('stores')->cascadeOnDelete();
             $table->foreignId('product_variant_id')->constrained('product_variants')->cascadeOnDelete();
 
-            $table->integer('quantity_on_hand')->default(0);
-            $table->integer('quantity_reserved')->default(0);
+            // Real-Time Total Quantity Counts
+            $table->integer('quantity_on_hand')->default(0); // Total available units (Serialized + Non-Serialized)
+            $table->integer('quantity_reserved')->default(0); // Held in pending carts / draft sales
 
-            $table->string('rack_location', 50)->nullable();
-            $table->unsignedInteger('reorder_point')->default(5);
-            $table->unsignedInteger('reorder_qty')->default(10);
-
+            // Event Pointers for Sequential Processing Sync
             $table->foreignId('last_ledger_id_applied')->nullable()->constrained('stock_ledgers')->nullOnDelete();
+            $table->foreignId('last_unit_event_id_applied')->nullable()->constrained('stock_unit_events')->nullOnDelete();
 
             $table->timestamps();
 
@@ -33,9 +29,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('stock_snapshots');

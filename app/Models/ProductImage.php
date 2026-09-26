@@ -1,8 +1,11 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,7 +16,6 @@ use Zerofyi\Media\Traits\HasAssets;
     'uuid',
     'product_id',
     'product_variant_id',
-    'asset_id',
     'asset_path',
     'thumb_path',
     'is_primary',
@@ -33,10 +35,14 @@ class ProductImage extends Model
         return [
             'product_id' => 'integer',
             'product_variant_id' => 'integer',
-            'asset_id' => 'integer',
             'is_primary' => 'boolean',
             'sort_order' => 'integer',
         ];
+    }
+
+    public function scopePrimary(Builder $query): Builder
+    {
+        return $query->where('is_primary', true);
     }
 
     public function product(): BelongsTo
@@ -47,10 +53,5 @@ class ProductImage extends Model
     public function productVariant(): BelongsTo
     {
         return $this->belongsTo(ProductVariant::class, 'product_variant_id');
-    }
-
-    public function asset(): BelongsTo
-    {
-        return $this->belongsTo(Asset::class, 'asset_id');
     }
 }

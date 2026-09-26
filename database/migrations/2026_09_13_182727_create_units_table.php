@@ -19,6 +19,8 @@ return new class extends Migration
             $table->foreignId('base_unit_id')->nullable()->constrained('units')->nullOnDelete();
             $table->decimal('multiplier', 12, 4)->default(1.0000);
 
+            $table->text('description')->nullable();
+
             $table->timestamps();
         });
     }

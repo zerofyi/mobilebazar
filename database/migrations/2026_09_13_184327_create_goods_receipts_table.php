@@ -6,23 +6,20 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('goods_receipts', function (Blueprint $table) {
             $table->id();
             $table->uuid('uuid')->unique();
 
-            $table->string('grn_number', 50)->unique();
+            $table->string('grn_number', 50)->unique(); // e.g., GRN-2026-0001
             $table->foreignId('purchase_order_id')->nullable()->constrained('purchase_orders')->nullOnDelete();
             $table->foreignId('store_id')->constrained('stores')->cascadeOnDelete();
 
             $table->foreignId('received_by')->nullable()->constrained('users')->nullOnDelete();
             $table->date('received_date');
 
-            $table->string('status', 30)->default('received')->index();
+            $table->string('status', 30)->default('received')->index(); // 'draft', 'received', 'cancelled'
             $table->text('notes')->nullable();
 
             $table->timestamps();
@@ -31,9 +28,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('goods_receipts');

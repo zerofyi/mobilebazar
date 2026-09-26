@@ -18,9 +18,8 @@ return new class extends Migration
             $table->foreignId('parent_id')->nullable()->constrained('categories')->nullOnDelete();
             $table->string('name');
             $table->string('slug')->unique();
-
-            $table->foreignId('image_asset_id')->nullable()->constrained('assets')->nullOnDelete();
-            $table->foreignId('icon_asset_id')->nullable()->constrained('assets')->nullOnDelete();
+            $table->string('image_path')->nullable();
+            $table->string('icon_path')->nullable();
 
             $table->unsignedInteger('sort_order')->default(0);
             $table->boolean('is_active')->default(true);

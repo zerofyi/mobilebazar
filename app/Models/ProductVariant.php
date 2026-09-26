@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -57,6 +58,11 @@ class ProductVariant extends Model
         ];
     }
 
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true);
+    }
+
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class, 'product_id');
@@ -85,5 +91,20 @@ class ProductVariant extends Model
     public function barcodes(): MorphMany
     {
         return $this->morphMany(Barcode::class, 'barcodeable');
+    }
+
+    public function purchaseOrderItems(): HasMany
+    {
+        return $this->hasMany(PurchaseOrderItem::class, 'product_variant_id');
+    }
+
+    public function stockUnits(): HasMany
+    {
+        return $this->hasMany(StockUnit::class, 'product_variant_id');
+    }
+
+    public function stockBatches(): HasMany
+    {
+        return $this->hasMany(StockBatch::class, 'product_variant_id');
     }
 }

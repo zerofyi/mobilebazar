@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { BookOpen, FolderGit2, LayoutGrid } from 'lucide-react';
+
 import AppLogo from '@/components/app-logo';
 import { NavFooter } from '@/components/nav-footer';
 import { NavMain } from '@/components/nav-main';
@@ -13,38 +13,23 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
-import { dashboard } from '@/routes';
-import type { NavItem } from '@/types';
 
-const mainNavItems: NavItem[] = [
-    {
-        title: 'Dashboard',
-        href: dashboard(),
-        icon: LayoutGrid,
-    },
-];
-
-const footerNavItems: NavItem[] = [
-    {
-        title: 'Repository',
-        href: 'https://github.com/laravel/react-starter-kit',
-        icon: FolderGit2,
-    },
-    {
-        title: 'Documentation',
-        href: 'https://laravel.com/docs/starter-kits#react',
-        icon: BookOpen,
-    },
-];
+import { getNavigationForRole } from '@/config/navigation';
+import { useCan } from '@/hooks/use-can';
 
 export function AppSidebar() {
+    const { primaryRole } = useCan();
+
+    const currentNav = getNavigationForRole(primaryRole);
+    const logoHref = currentNav.mainNavItems?.[0]?.href ?? '#';
+
     return (
-        <Sidebar collapsible="icon" variant="inset">
+        <Sidebar collapsible="icon" variant="sidebar">
             <SidebarHeader>
                 <SidebarMenu>
                     <SidebarMenuItem>
                         <SidebarMenuButton size="lg" asChild>
-                            <Link href={dashboard()} prefetch>
+                            <Link href={logoHref} prefetch>
                                 <AppLogo />
                             </Link>
                         </SidebarMenuButton>
@@ -53,11 +38,19 @@ export function AppSidebar() {
             </SidebarHeader>
 
             <SidebarContent>
-                <NavMain items={mainNavItems} />
+                {currentNav.mainNavItems && currentNav.mainNavItems.length > 0 && (
+                    <NavMain items={currentNav.mainNavItems} />
+                )}
+
+                {currentNav.mainNavGroups && currentNav.mainNavGroups.length > 0 && (
+                    <NavMain groups={currentNav.mainNavGroups} />
+                )}
             </SidebarContent>
 
             <SidebarFooter>
-                <NavFooter items={footerNavItems} className="mt-auto" />
+                {currentNav.footerNavItems && currentNav.footerNavItems.length > 0 && (
+                    <NavFooter items={currentNav.footerNavItems} className="mt-auto" />
+                )}
                 <NavUser />
             </SidebarFooter>
         </Sidebar>

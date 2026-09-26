@@ -19,7 +19,7 @@ return new class extends Migration
             $table->string('title');
 
             $table->string('image_path');
-            $table->foreignId('image_asset_id')->nullable()->constrained('assets')->nullOnDelete();
+            // $table->foreignId('image_asset_id')->nullable()->constrained('assets')->nullOnDelete();
 
             $table->string('url_type', 50)->default('product');
             $table->string('url')->nullable();

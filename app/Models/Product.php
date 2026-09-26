@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -60,6 +61,26 @@ class Product extends Model
             'is_best_seller' => 'boolean',
             'created_by' => 'integer',
         ];
+    }
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true);
+    }
+
+    public function scopeFeatured(Builder $query): Builder
+    {
+        return $query->where('is_featured', true);
+    }
+
+    public function scopeTrending(Builder $query): Builder
+    {
+        return $query->where('is_trending', true);
+    }
+
+    public function scopeBestSeller(Builder $query): Builder
+    {
+        return $query->where('is_best_seller', true);
     }
 
     public function category(): BelongsTo

@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
     'uuid',
@@ -16,11 +17,15 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'product_variant_id',
     'manual_item_name',
     'batch_number',
+    'purchase_order_id',
     'purchase_order_item_id',
     'received_qty',
     'remaining_qty',
     'unit_cost',
-    'expiry_date',
+    'base_cost',
+    'landed_cost',
+    'tax_type',
+    'is_margin_scheme',
 ])]
 class StockBatch extends Model
 {
@@ -34,12 +39,24 @@ class StockBatch extends Model
     protected function casts(): array
     {
         return [
+            'store_id' => 'integer',
+            'product_variant_id' => 'integer',
+            'purchase_order_id' => 'integer',
+            'purchase_order_item_id' => 'integer',
             'received_qty' => 'integer',
             'remaining_qty' => 'integer',
             'unit_cost' => 'decimal:2',
-            'expiry_date' => 'date',
+            'base_cost' => 'decimal:2',
+            'landed_cost' => 'decimal:2',
+            'is_margin_scheme' => 'boolean',
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function store(): BelongsTo
     {
@@ -51,8 +68,18 @@ class StockBatch extends Model
         return $this->belongsTo(ProductVariant::class);
     }
 
+    public function purchaseOrder(): BelongsTo
+    {
+        return $this->belongsTo(PurchaseOrder::class);
+    }
+
     public function purchaseOrderItem(): BelongsTo
     {
         return $this->belongsTo(PurchaseOrderItem::class);
+    }
+
+    public function ledgers(): HasMany
+    {
+        return $this->hasMany(StockLedger::class, 'stock_batch_id');
     }
 }

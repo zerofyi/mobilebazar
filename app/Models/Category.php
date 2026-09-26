@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -18,8 +19,8 @@ use Zerofyi\Media\Traits\HasAssets;
     'parent_id',
     'name',
     'slug',
-    'image_asset_id',
-    'icon_asset_id',
+    'image_path',
+    'icon_path',
     'sort_order',
     'is_active',
 ])]
@@ -41,11 +42,14 @@ class Category extends Model
     {
         return [
             'parent_id' => 'integer',
-            'image_asset_id' => 'integer',
-            'icon_asset_id' => 'integer',
             'sort_order' => 'integer',
             'is_active' => 'boolean',
         ];
+    }
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true);
     }
 
     public function parent(): BelongsTo
@@ -56,16 +60,6 @@ class Category extends Model
     public function children(): HasMany
     {
         return $this->hasMany(self::class, 'parent_id');
-    }
-
-    public function imageAsset(): BelongsTo
-    {
-        return $this->belongsTo(Asset::class, 'image_asset_id');
-    }
-
-    public function iconAsset(): BelongsTo
-    {
-        return $this->belongsTo(Asset::class, 'icon_asset_id');
     }
 
     public function products(): HasMany

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -38,18 +39,59 @@ class Address extends Model
         return ['uuid'];
     }
 
+    public function getRouteKeyName(): string
+    {
+        return 'uuid';
+    }
+
     protected function casts(): array
     {
         return [
-            'addressable_id' => 'integer',
             'lat' => 'decimal:8',
             'lng' => 'decimal:8',
             'is_default' => 'boolean',
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
+
     public function addressable(): MorphTo
     {
         return $this->morphTo();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Query Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    public function scopeDefault(Builder $query): Builder
+    {
+        return $query->where('is_default', true);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors & Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    public function getFormattedAddressAttribute(): string
+    {
+        return collect([
+            $this->line1,
+            $this->line2,
+            $this->village_or_area,
+            $this->city,
+            $this->district,
+            $this->state,
+            $this->postal_code,
+            $this->country,
+        ])->filter()->implode(', ');
     }
 }

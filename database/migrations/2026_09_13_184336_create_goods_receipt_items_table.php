@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('goods_receipt_items', function (Blueprint $table) {
@@ -16,12 +13,15 @@ return new class extends Migration
 
             $table->foreignId('goods_receipt_id')->constrained('goods_receipts')->cascadeOnDelete();
             $table->foreignId('purchase_order_item_id')->nullable()->constrained('purchase_order_items')->nullOnDelete();
-
-            $table->foreignId('product_variant_id')->constrained('product_variants')->restrictOnDelete();
-            $table->foreignId('condition_id')->nullable();
+            $table->foreignId('product_variant_id')->nullable()->constrained('product_variants')->nullOnDelete();
+            $table->string('manual_item_name')->nullable();
 
             $table->unsignedInteger('received_qty');
-            $table->decimal('unit_cost', 12, 2)->default(0.00);
+
+            // Financial Costs (Parity with Stock Units / Batches)
+            $table->decimal('unit_cost', 12, 2)->default(0.00); // Raw cost
+            $table->decimal('base_cost', 12, 2)->default(0.00); // Excl. claimable GST
+            $table->decimal('landed_cost', 12, 2)->default(0.00); // Total cash paid out
 
             $table->timestamps();
 
@@ -29,9 +29,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('goods_receipt_items');

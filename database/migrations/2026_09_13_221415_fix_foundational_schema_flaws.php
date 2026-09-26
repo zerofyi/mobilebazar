@@ -10,13 +10,6 @@ return new class extends Migration
     public function up(): void
     {
         // Deferred FKs due to execution order constraints
-        Schema::table('goods_receipt_items', function (Blueprint $table) {
-            $table->foreignId('condition_id')->nullable()->change()->constrained('device_conditions')->nullOnDelete();
-        });
-
-        Schema::table('stock_units', function (Blueprint $table) {
-            $table->foreignId('sold_invoice_item_id')->nullable()->change()->constrained('invoice_items')->nullOnDelete();
-        });
 
         Schema::table('users', function (Blueprint $table) {
             $table->foreignId('store_id')->nullable()->change()->constrained('stores')->nullOnDelete();
@@ -38,14 +31,6 @@ return new class extends Migration
 
         Schema::table('users', function (Blueprint $table) {
             $table->dropForeign(['store_id']);
-        });
-
-        Schema::table('stock_units', function (Blueprint $table) {
-            $table->dropForeign(['sold_invoice_item_id']);
-        });
-
-        Schema::table('goods_receipt_items', function (Blueprint $table) {
-            $table->dropForeign(['condition_id']);
         });
     }
 };

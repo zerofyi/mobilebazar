@@ -23,8 +23,10 @@ return new class extends Migration
 
             $table->unsignedInteger('quantity')->default(1);
             $table->decimal('unit_price', 12, 2)->default(0.00);
+            $table->string('tax_type', 10)->default('inclusive');
+            $table->boolean('is_margin_scheme')->default(false);
+            $table->decimal('landed_cost', 12, 2)->nullable();
 
-            $table->foreignId('tax_category_id')->nullable()->constrained('tax_categories')->nullOnDelete();
             $table->decimal('tax_pct', 5, 2)->default(0.00);
             $table->decimal('tax_amount', 12, 2)->default(0.00);
             $table->decimal('discount_amount', 12, 2)->default(0.00);

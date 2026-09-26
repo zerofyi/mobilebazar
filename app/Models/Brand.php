@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Zerofyi\Media\Traits\HasAssets;
@@ -17,7 +17,7 @@ use Zerofyi\Media\Traits\HasAssets;
     'uuid',
     'name',
     'slug',
-    'logo_asset_id',
+    'logo_path',
     'is_active',
 ])]
 class Brand extends Model
@@ -38,13 +38,12 @@ class Brand extends Model
     {
         return [
             'is_active' => 'boolean',
-            'logo_asset_id' => 'integer',
         ];
     }
 
-    public function logoAsset(): BelongsTo
+    public function scopeActive(Builder $query): Builder
     {
-        return $this->belongsTo(Asset::class, 'logo_asset_id');
+        return $query->where('is_active', true);
     }
 
     public function products(): HasMany

@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable([
     'uuid',
@@ -19,17 +21,21 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'imei1',
     'imei2',
     'serial_number',
-    'color',
     'device_condition',
-    'health',
-    'age',
-    'warranty',
+    'overall_health',
+    'health_id',
+    'activation_date',
+    'warranty_expiry_date',
+    'remaining_warranty',
+    'is_saleable',
     'status',
-    'cost_price',
+    'landed_cost',
+    'base_cost',
+    'wholesale_price',
     'selling_price',
+    'is_margin_scheme',
     'purchase_order_id',
     'purchase_order_item_id',
-    'sold_invoice_item_id',
     'notes',
 ])]
 class StockUnit extends Model
@@ -46,13 +52,41 @@ class StockUnit extends Model
         return [
             'store_id' => 'integer',
             'product_variant_id' => 'integer',
-            'cost_price' => 'decimal:2',
-            'selling_price' => 'decimal:2',
+            'health_id' => 'integer',
             'purchase_order_id' => 'integer',
             'purchase_order_item_id' => 'integer',
-            'sold_invoice_item_id' => 'integer',
+            'activation_date' => 'date',
+            'warranty_expiry_date' => 'date',
+            'is_saleable' => 'boolean',
+            'is_margin_scheme' => 'boolean',
+            'landed_cost' => 'decimal:2',
+            'base_cost' => 'decimal:2',
+            'wholesale_price' => 'decimal:2',
+            'selling_price' => 'decimal:2',
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Query Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    public function scopeForStore(Builder $query, int $storeId): Builder
+    {
+        return $query->where('store_id', $storeId);
+    }
+
+    public function scopeAvailable(Builder $query): Builder
+    {
+        return $query->where('status', 'available')->where('is_saleable', true);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function store(): BelongsTo
     {
@@ -78,6 +112,17 @@ class StockUnit extends Model
     {
         return $this->hasMany(StockUnitEvent::class);
     }
+
+    public function deviceHealth(): HasOne
+    {
+        return $this->hasOne(DeviceHealth::class, 'stock_unit_id');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors
+    |--------------------------------------------------------------------------
+    */
 
     public function getDisplayNameAttribute(): string
     {

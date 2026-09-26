@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'short_code',
     'base_unit_id',
     'multiplier',
+    'description',
 ])]
 class Unit extends Model
 {

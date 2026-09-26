@@ -14,20 +14,22 @@ return new class extends Migration
         Schema::create('invoices', function (Blueprint $table) {
             $table->id();
             $table->uuid('uuid')->unique();
+            $table->string('identity', 20)->unique();
 
             $table->string('invoice_number', 50)->unique();
+            $table->uuid('idempotency_key')->nullable()->unique();
+
             $table->foreignId('store_id')->constrained('stores')->cascadeOnDelete();
             $table->foreignId('customer_id')->nullable()->constrained('customers')->nullOnDelete();
             $table->foreignId('channel_id')->nullable()->constrained('channels')->nullOnDelete();
-            $table->foreignId('shift_id')->nullable()->constrained('shifts')->nullOnDelete();
 
             $table->foreignId('order_id')->nullable()->constrained('orders')->nullOnDelete();
 
-            $table->string('customer_name')->nullable();
-            $table->string('customer_phone', 20)->nullable();
-
             $table->date('invoice_date');
             $table->date('due_date')->nullable();
+
+            $table->boolean('is_gst_billed')->default(false);
+            $table->boolean('is_intra_state')->default(true);
 
             $table->decimal('subtotal', 12, 2)->default(0.00);
             $table->decimal('tax_amount', 12, 2)->default(0.00);
@@ -49,7 +51,6 @@ return new class extends Migration
 
             $table->index(['store_id', 'invoice_date', 'payment_status'], 'idx_invoices_store_date_status');
             $table->index(['customer_id', 'payment_status'], 'idx_invoices_customer_status');
-            $table->index(['shift_id', 'payment_mode'], 'idx_invoices_shift_mode');
         });
     }
 

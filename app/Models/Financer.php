@@ -9,16 +9,16 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Zerofyi\Media\Traits\HasAssets;
 
 #[Fillable([
     'uuid',
-    'user_id',
+    'store_id',
     'name',
     'mobile',
-    'signature_asset_id',
-    'address_id',
+    'signature_path',
     'type',
     'is_active',
     'limit',
@@ -39,21 +39,17 @@ class Financer extends Model
             'is_active' => 'boolean',
             'limit' => 'decimal:2',
             'balance' => 'decimal:2',
+            'signature_path'=> 'string',
         ];
     }
 
-    public function user(): BelongsTo
+    public function store(): BelongsTo
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Store::class);
     }
 
-    public function signatureAsset(): BelongsTo
+    public function address(): MorphOne
     {
-        return $this->belongsTo(Asset::class, 'signature_asset_id');
-    }
-
-    public function address(): BelongsTo
-    {
-        return $this->belongsTo(Address::class);
+        return $this->morphOne(Address::class, 'addressable');
     }
 }

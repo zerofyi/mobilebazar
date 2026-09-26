@@ -103,6 +103,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Email Verification Link Expiry
+    |--------------------------------------------------------------------------
+    |
+    | The expiry time is the number of minutes that an email verification link
+    | will be considered valid.
+    |
+    */
+
+    'verification' => [
+        'expire' => 60,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Password Confirmation Timeout
     |--------------------------------------------------------------------------
     |

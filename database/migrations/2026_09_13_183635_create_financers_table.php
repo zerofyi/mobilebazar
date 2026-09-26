@@ -15,12 +15,11 @@ return new class extends Migration
             $table->id();
             $table->uuid('uuid')->unique();
 
-            $table->foreignId('user_id')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('store_id')->constrained('stores')->cascadeOnDelete();
             $table->string('name');
             $table->string('mobile')->index();
 
-            $table->foreignId('signature_asset_id')->nullable()->constrained('assets')->nullOnDelete();
-            $table->foreignId('address_id')->nullable()->constrained('addresses')->nullOnDelete();
+            $table->string('signature_path')->nullable();
 
             $table->string('type')->default('individual');
             $table->boolean('is_active')->default(true);

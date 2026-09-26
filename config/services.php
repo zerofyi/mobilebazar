@@ -35,4 +35,9 @@ return [
         ],
     ],
 
+    'startmessaging' => [
+        'key' => env('STARTMESSAGING_API_KEY'),
+        'template_id' => env('STARTMESSAGING_TEMPLATE_ID'),
+    ],
+
 ];

@@ -17,7 +17,7 @@ return new class extends Migration
 
             $table->string('name');
             $table->string('slug')->unique();
-            $table->foreignId('logo_asset_id')->nullable()->constrained('assets')->nullOnDelete();
+            $table->string('logo_path')->nullable();
 
             $table->boolean('is_active')->default(true);
             $table->softDeletes();

@@ -11,18 +11,18 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 #[Fillable([
+    'idempotency_key',
     'store_id',
     'product_variant_id',
-    'stock_unit_id',
     'stock_batch_id',
     'transaction_type',
     'quantity_delta',
     'balance_after',
-    'unit_cost',
+    'base_cost',
+    'landed_cost',
     'reference_type',
     'reference_id',
     'created_by',
-    'idempotency_key', // Ensure this is mapped!
 ])]
 class StockLedger extends Model
 {
@@ -33,12 +33,23 @@ class StockLedger extends Model
     protected function casts(): array
     {
         return [
+            'store_id' => 'integer',
+            'product_variant_id' => 'integer',
+            'stock_batch_id' => 'integer',
             'quantity_delta' => 'integer',
             'balance_after' => 'integer',
-            'unit_cost' => 'decimal:2',
+            'base_cost' => 'decimal:2',
+            'landed_cost' => 'decimal:2',
+            'created_by' => 'integer',
             'created_at' => 'datetime',
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function store(): BelongsTo
     {
@@ -48,11 +59,6 @@ class StockLedger extends Model
     public function productVariant(): BelongsTo
     {
         return $this->belongsTo(ProductVariant::class);
-    }
-
-    public function stockUnit(): BelongsTo
-    {
-        return $this->belongsTo(StockUnit::class);
     }
 
     public function stockBatch(): BelongsTo

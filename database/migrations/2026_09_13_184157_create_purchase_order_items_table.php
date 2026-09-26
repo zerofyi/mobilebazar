@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('purchase_order_items', function (Blueprint $table) {
@@ -19,12 +16,17 @@ return new class extends Migration
             $table->string('manual_item_name')->nullable();
 
             $table->unsignedInteger('ordered_qty')->default(1);
-            $table->foreignId('unit_id')->nullable()->constrained('units')->nullOnDelete();
-            $table->decimal('unit_cost', 12, 2)->default(0.00);
+            $table->decimal('unit_cost', 12, 2)->default(0.00); // Input cost entered by user
+            $table->enum('tax_type', ['inclusive', 'exclusive'])->default('exclusive');
 
-            $table->foreignId('tax_category_id')->nullable()->constrained('tax_categories')->nullOnDelete();
-            $table->decimal('tax_pct', 5, 2)->default(0.00);
-            $table->decimal('tax_amount', 12, 2)->default(0.00);
+            // Auto-set TRUE for bill_type == 'pv' or second-hand devices
+            $table->boolean('is_margin_scheme')->default(false);
+
+            // Derived Costs
+            $table->decimal('base_cost', 12, 2)->default(0.00); // Unit cost excluding tax (Asset Valuation Base)
+            $table->decimal('landed_cost', 12, 2)->default(0.00); // Unit cost including tax (Total Out-of-Pocket)
+            $table->decimal('tax_pct', 5, 2)->default(0.00); // Tax rate applied
+            $table->decimal('tax_amount', 12, 2)->default(0.00); // Total line tax
             $table->decimal('discount_amount', 12, 2)->default(0.00);
             $table->decimal('line_total', 12, 2)->default(0.00);
 
@@ -35,9 +37,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('purchase_order_items');

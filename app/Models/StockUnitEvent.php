@@ -12,9 +12,8 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 #[Fillable([
     'stock_unit_id',
+    'store_id',
     'event_type',
-    'from_store_id',
-    'to_store_id',
     'reference_type',
     'reference_id',
     'note',
@@ -30,25 +29,25 @@ class StockUnitEvent extends Model
     {
         return [
             'stock_unit_id' => 'integer',
-            'from_store_id' => 'integer',
-            'to_store_id' => 'integer',
+            'store_id' => 'integer',
             'created_at' => 'datetime',
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
     public function stockUnit(): BelongsTo
     {
         return $this->belongsTo(StockUnit::class);
     }
 
-    public function fromStore(): BelongsTo
+    public function store(): BelongsTo
     {
-        return $this->belongsTo(Store::class, 'from_store_id');
-    }
-
-    public function toStore(): BelongsTo
-    {
-        return $this->belongsTo(Store::class, 'to_store_id');
+        return $this->belongsTo(Store::class);
     }
 
     public function reference(): MorphTo

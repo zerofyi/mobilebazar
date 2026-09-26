@@ -27,7 +27,7 @@ return new class extends Migration
             $table->decimal('selling_price', 12, 2)->default(0.00);
             $table->decimal('cost_price', 12, 2)->default(0.00);
             $table->decimal('min_selling_price', 12, 2)->default(0.00);
-            $table->decimal('compare_price', 12, 2)->nullable();
+            $table->decimal('compare_price', 12, 2)->default(0.00);
             $table->decimal('weight', 12, 4)->nullable();
 
             $table->integer('stock_alert_qty')->nullable();
