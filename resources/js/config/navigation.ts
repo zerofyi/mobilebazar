@@ -1,5 +1,7 @@
-import { FolderTree, GalleryHorizontal, Handshake, Landmark, LayoutGrid, ListChecks, MonitorCog, Package, Settings, ShoppingCart, Sliders, Store, Tag, User } from 'lucide-react';
+import { FolderTree, GalleryHorizontal, Handshake, Landmark, LayoutGrid, ListChecks, MonitorCog, Package, Settings, ShoppingCart, Sliders, Store, Tag, User, ListClock, ShoppingCartPlus, ShoppingCartMinus } from 'lucide-react';
+
 import type { NavItemGroup, RoleNavigation, UserRole } from '@/types';
+
 import admin from '@/routes/admin';
 import store from '@/routes/store';
 import zero from '@/routes/zero';
@@ -74,16 +76,34 @@ export const COMMON_NAV: RoleNavigation = {
             targetRoles: ['zero', 'admin', 'store'],
             items: [
                 {
-                    title: 'Purchases',
+                    title: 'Add Purchases',
+                    href: app.purchases.create.url(),
+                    icon: ShoppingCartPlus,
+                    permission: 'purchases.create',
+                },
+                {
+                    title: 'Purchases History',
                     href: app.purchases.index.url(),
-                    icon: ShoppingCart,
+                    icon: ListClock,
                     permission: 'purchases.index',
+                },
+                {
+                    title: 'Add Sales',
+                    href: app.sales.create.url(),
+                    icon: ShoppingCartMinus,
+                    permission: 'sales.create',
+                },
+                {
+                    title: 'Sales History',
+                    href: app.sales.index.url(),
+                    icon: ListClock,
+                    permission: 'sales.index',
                 },
 
             ],
         },
         {
-            title: 'Business Management',
+            title: 'Party Management',
             targetRoles: ['zero', 'admin', 'store'],
             items: [
                 {

@@ -15,6 +15,7 @@ return new class extends Migration
             $table->foreignId('product_variant_id')->constrained('product_variants')->cascadeOnDelete();
 
             // Real-Time Total Quantity Counts
+            $table->integer('total_quantity')->default(0); // Lifetime total units ever added to stock
             $table->integer('quantity_on_hand')->default(0); // Total available units (Serialized + Non-Serialized)
             $table->integer('quantity_reserved')->default(0); // Held in pending carts / draft sales
 

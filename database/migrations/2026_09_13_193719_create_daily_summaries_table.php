@@ -56,6 +56,7 @@ return new class extends Migration
 
             $table->timestamps();
             $table->unique(['store_id', 'date'], 'uniq_store_daily_summary');
+            $table->index('date');
         });
     }
 

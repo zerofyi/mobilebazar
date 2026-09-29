@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 #[Fillable([
     'store_id',
     'product_variant_id',
+    'total_quantity',
     'quantity_on_hand',
     'quantity_reserved',
     'last_ledger_id_applied',
@@ -26,6 +27,7 @@ class StockSnapshot extends Model
         return [
             'store_id' => 'integer',
             'product_variant_id' => 'integer',
+            'total_quantity' => 'integer',
             'quantity_on_hand' => 'integer',
             'quantity_reserved' => 'integer',
             'last_ledger_id_applied' => 'integer',

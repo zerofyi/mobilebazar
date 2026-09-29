@@ -10,6 +10,7 @@ use App\Http\Controllers\FinancerController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseEntryController;
+use App\Http\Controllers\SaleEntryController;
 use App\Http\Controllers\StoreController;
 use App\Http\Controllers\SupplierController;
 
@@ -123,10 +124,37 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
     });
 
     Route::prefix('purchases')->name('purchases.')->group(function () {
+        // 1. Static routes (No parameters)
         Route::get('/', [PurchaseEntryController::class, 'index'])->name('index');
         Route::get('/create', [PurchaseEntryController::class, 'create'])->name('create');
-        Route::get('/{purchase}', [PurchaseEntryController::class, 'show'])->name('show');
         Route::post('/', [PurchaseEntryController::class, 'store'])->name('store');
+
+        // 2. Custom action routes on specific items (Place BEFORE general show/update/destroy)
+        Route::get('/{purchase}/print', [PurchaseEntryController::class, 'print'])->name('print');
+        Route::delete('/{purchase}/purge', [PurchaseEntryController::class, 'purge'])->name('purge');
+
+        // 3. Standard Resource routes with parameters
+        Route::get('/{purchase}', [PurchaseEntryController::class, 'show'])->name('show');
+        Route::get('/{purchase}/edit', [PurchaseEntryController::class, 'edit'])->name('edit');
+        Route::put('/{purchase}', [PurchaseEntryController::class, 'update'])->name('update');
+        Route::delete('/{purchase}', [PurchaseEntryController::class, 'destroy'])->name('destroy');
+    });
+
+    Route::prefix('sales')->name('sales.')->group(function () {
+        // 1. Static routes (No parameters)
+        Route::get('/', [SaleEntryController::class, 'index'])->name('index');
+        Route::get('/create', [SaleEntryController::class, 'create'])->name('create');
+        Route::post('/', [SaleEntryController::class, 'store'])->name('store');
+
+        // 2. Custom action routes on specific items (Place BEFORE general show/update/destroy)
+        Route::get('/{sale}/print', [SaleEntryController::class, 'print'])->name('print');
+        Route::delete('/{sale}/purge', [SaleEntryController::class, 'purge'])->name('purge');
+
+        // 3. Standard Resource routes with parameters
+        Route::get('/{sale}', [SaleEntryController::class, 'show'])->name('show');
+        Route::get('/{sale}/edit', [SaleEntryController::class, 'edit'])->name('edit');
+        Route::put('/{sale}', [SaleEntryController::class, 'update'])->name('update');
+        Route::delete('/{sale}', [SaleEntryController::class, 'destroy'])->name('destroy');
     });
 
 });

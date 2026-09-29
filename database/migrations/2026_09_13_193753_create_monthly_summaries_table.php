@@ -72,11 +72,6 @@ return new class extends Migration
                 ['store_id', 'year_month'],
                 'uniq_store_monthly_summary'
             );
-
-            $table->index(
-                ['store_id', 'year_month'],
-                'idx_ms_store_month'
-            );
         });
     }
 

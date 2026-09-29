@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->uuid('uuid')->unique();
 
-            $table->string('entry_number', 50)->unique();
+            $table->string('entry_number', 50);
             $table->foreignId('store_id')->constrained('stores')->cascadeOnDelete();
 
             $table->date('entry_date');
@@ -29,6 +29,7 @@ return new class extends Migration
 
             $table->timestamps();
 
+            $table->unique(['store_id', 'entry_number'], 'uniq_store_journal_entry_number');
             $table->index(['store_id', 'entry_date'], 'idx_je_store_date');
         });
     }

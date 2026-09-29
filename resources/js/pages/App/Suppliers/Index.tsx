@@ -265,11 +265,11 @@ export default function Index({ suppliers: supplierList, stats, stores = [], fil
                                                             <Building2 className="size-3" /> {item.company_name}
                                                         </p>
                                                     )}
-                                                    {item.store && (
+                                                    {/* {item.store && (
                                                         <p className="text-[10px] text-muted-foreground flex items-center gap-1">
                                                             <Store className="size-3 text-primary" /> {item.store.name}
                                                         </p>
-                                                    )}
+                                                    )} */}
                                                     {item.gstin && (
                                                         <Badge variant="outline" className="font-mono text-[9px] uppercase px-1 py-0 bg-muted/30">
                                                             GSTIN: {item.gstin}

@@ -12,6 +12,7 @@ import { usePermissions } from "@/hooks/user-permissions";
 import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { SearchCommand } from "@/components/special/search-command";
 
 interface Props { onSubmit: (isDraft: boolean) => void; isSubmitting: boolean; }
 
@@ -49,21 +50,27 @@ export default function PurchaseHeader({ onSubmit, isSubmitting }: Props) {
                                 <ChevronRight className="size-3 text-muted-foreground/60" />
                                 <Link href={app.purchases.index.url()} className="hover:text-foreground transition-colors">Purchases</Link>
                                 <ChevronRight className="size-3 text-muted-foreground/60" />
-                                <span className="font-semibold text-foreground">New Purchase Voucher</span>
+                                <span className="font-semibold text-foreground">New Purchase {flags?.billType === 'po' ? 'Order' : 'Voucher'}</span>
                             </nav>
                             <div className="flex items-center space-x-2 mt-0.5">
-                                <h1 className="text-base font-semibold text-foreground leading-tight">Purchase Voucher Entry</h1>
+                                <h1 className="text-base font-semibold text-foreground leading-tight">Purchase {flags?.billType === 'po' ? 'Order' : 'Voucher'} Entry</h1>
                                 <span className="text-xs text-muted-foreground/40">|</span>
-                                <div className="flex items-center space-x-1 text-xs font-medium text-primary">
-                                    <BadgeCheck className="size-3.5" /><span>{flags.isGstBilled ? "GST Verified" : "Non-GST"}</span>
+                                <div
+                                    className={`flex items-center space-x-1 text-xs font-medium ${
+                                        flags.isGstBilled ? 'text-primary' : 'text-muted-foreground'
+                                    }`}
+                                >
+                                    <BadgeCheck className="size-3.5" />
+                                    <span>{flags.isGstBilled ? 'GST Verified' : 'Non-GST'}</span>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <div className="flex items-center space-x-2">
+                        <SearchCommand variant="mobile"/>
                         {store.is_gst_registered && can("profile.manage.gst.status") && (
-                            <div className="flex items-center gap-2 px-3 h-9 rounded-md border border-border bg-background">
+                            <div className="flex items-center gap-2 px-3 h-9 rounded-md border border-border bg-muted/20">
                                 <ReceiptText className={cn("size-4", state.storeGstBillToggle ? "text-primary" : "text-muted-foreground")} />
                                 <Label htmlFor="gst-bill-toggle" className="text-xs font-medium cursor-pointer whitespace-nowrap">GST Bill</Label>
                                 <Switch id="gst-bill-toggle" checked={state.storeGstBillToggle} onCheckedChange={(c) => dispatch({ type: "TOGGLE_GST", payload: c })} aria-label="Toggle GST Bill" />
