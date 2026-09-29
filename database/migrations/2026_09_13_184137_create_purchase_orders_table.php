@@ -16,7 +16,7 @@ return new class extends Migration
 
             // 'po' = Registered B2B Tax Invoice | 'pv' = Unregistered Self-Invoice / Purchase Voucher
             $table->enum('bill_type', ['po', 'pv'])->default('pv')->index();
-            $table->string('po_number', 50)->unique(); // Internal sequence (e.g., PO-1001 or PV-1001)
+            $table->string('po_number', 50); // Internal sequence (e.g., PO-1001 or PV-1001)
             $table->string('idempotency_key', 64)->nullable()->unique();
             $table->string('vendor_invoice_no', 100)->nullable(); // External bill no. from vendor
 
@@ -59,6 +59,8 @@ return new class extends Migration
 
             $table->softDeletes();
             $table->timestamps();
+
+            $table->unique(['store_id', 'po_number'], 'uq_po_store_number');
 
             $table->index(['store_id', 'status', 'order_date'], 'idx_po_store_status_date');
             $table->index(['store_id', 'bill_type', 'order_date'], 'idx_po_store_bill_date');

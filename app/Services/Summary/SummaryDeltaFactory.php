@@ -64,4 +64,69 @@ final class SummaryDeltaFactory
             'purchase_items_count'           => $items,
         ]);
     }
+
+    /**
+     * Definitions (mirror forPurchase):
+     *  - total_sales                        = grand_total (tax - discount included)
+     *  - new/used/serialized/non_serialized = split of evaluated LINE totals.
+     *    Serialized rows split new/used per unit by device_condition (NEW vs
+     *    anything else); bulk lines count as "new".
+     *  - total_tax_collected                = tax_amount
+     *  - total_discounts                    = discount_amount (bill-level)
+     *  - cash/upi/card/bank_collected       = paid_amount routed by payment_mode
+     *  - gross_profit                       = total_sales - COGS (true landed cost)
+     *  - invoice_count / invoice_items_count
+     *
+     * @param array{rows: list<array{line_total: float, qty: int, device_condition: ?string, stock_unit_id: ?int}>, subtotal: float, tax_amount: float, discount_amount: float, round_off: float, grand_total: float, cogs_total: float} $evaluated
+     */
+    public static function forSale(int $storeId, array $data, array $evaluated): SummaryDelta
+    {
+        $new = $used = $serialized = $bulk = 0.0;
+        $items = 0;
+
+        $paymentMode = strtolower((string) ($data['payment_mode'] ?? 'cash'));
+        $paid        = (float) ($data['paid_amount'] ?? 0);
+
+        $paidBuckets = [
+            'cash_collected' => 0.0,
+            'upi_collected'  => 0.0,
+            'card_collected' => 0.0,
+            'bank_collected' => 0.0,
+        ];
+
+        $bucketKey = match ($paymentMode) {
+            'cash'                         => 'cash_collected',
+            'upi'                          => 'upi_collected',
+            'card', 'credit_card', 'debit_card' => 'card_collected',
+            default                        => 'bank_collected',
+        };
+        $paidBuckets[$bucketKey] = $paid;
+
+        foreach ($evaluated['rows'] ?? [] as $row) {
+            $rowTotal = (float) ($row['line_total'] ?? 0);
+            $items   += (int) ($row['qty'] ?? 1);
+
+            if (! empty($row['stock_unit_id'])) {
+                $serialized += $rowTotal;
+                $cond = strtoupper(trim((string) ($row['device_condition'] ?? 'NEW')));
+                $cond === 'NEW' ? $new += $rowTotal : $used += $rowTotal;
+            } else {
+                $bulk += $rowTotal;
+                $new  += $rowTotal;
+            }
+        }
+
+        return new SummaryDelta($storeId, $data['invoice_date'], array_merge([
+            'total_sales'                => $evaluated['grand_total'] ?? 0,
+            'new_sales'                  => $new,
+            'used_sales'                 => $used,
+            'total_sales_serialized'     => $serialized,
+            'total_sales_non_serialized' => $bulk,
+            'total_tax_collected'        => $evaluated['tax_amount'] ?? 0,
+            'total_discounts'            => $evaluated['discount_amount'] ?? 0,
+            'gross_profit'               => ($evaluated['grand_total'] ?? 0) - ($evaluated['cogs_total'] ?? 0),
+            'invoice_count'              => 1,
+            'invoice_items_count'        => $items,
+        ], $paidBuckets));
+    }
 }

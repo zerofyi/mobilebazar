@@ -10,22 +10,26 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 #[Fillable([
     'uuid',
+    'identity',
     'invoice_number',
+    'idempotency_key',
     'store_id',
-    'customer_id',
+    'party_type',
+    'party_id',
     'channel_id',
-    'shift_id',
     'order_id',
-    'customer_name',
-    'customer_phone',
     'invoice_date',
     'due_date',
+    'is_gst_billed',
+    'is_intra_state',
     'subtotal',
     'tax_amount',
     'discount_amount',
+    'shipping_charge',
     'round_off',
     'grand_total',
     'paid_amount',
@@ -53,6 +57,7 @@ class Invoice extends Model
             'subtotal' => 'decimal:2',
             'tax_amount' => 'decimal:2',
             'discount_amount' => 'decimal:2',
+            'shipping_charge' => 'decimal:2',
             'round_off' => 'decimal:2',
             'grand_total' => 'decimal:2',
             'paid_amount' => 'decimal:2',
@@ -65,19 +70,19 @@ class Invoice extends Model
         return $this->belongsTo(Store::class);
     }
 
-    public function customer(): BelongsTo
+    /**
+     * The sale counterparty — a Customer (retail) or a Supplier (the
+     * "party" table; used for wholesale/B2B sales). Every sale MUST have a
+     * party; walk-in sales without a master record are not supported.
+     */
+    public function party(): MorphTo
     {
-        return $this->belongsTo(Customer::class);
+        return $this->morphTo();
     }
 
     public function channel(): BelongsTo
     {
         return $this->belongsTo(Channel::class);
-    }
-
-    public function shift(): BelongsTo
-    {
-        return $this->belongsTo(Shift::class);
     }
 
     public function createdBy(): BelongsTo

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -19,13 +20,18 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'batch_number',
     'purchase_order_id',
     'purchase_order_item_id',
+    'product_condition',
+    'overall_health',
     'received_qty',
     'remaining_qty',
     'unit_cost',
     'base_cost',
     'landed_cost',
+    'wholesale_price',
+    'selling_price',
     'tax_type',
     'is_margin_scheme',
+    'is_saleable',
 ])]
 class StockBatch extends Model
 {
@@ -48,8 +54,27 @@ class StockBatch extends Model
             'unit_cost' => 'decimal:2',
             'base_cost' => 'decimal:2',
             'landed_cost' => 'decimal:2',
+            'wholesale_price' => 'decimal:2',
+            'selling_price' => 'decimal:2',
             'is_margin_scheme' => 'boolean',
+            'is_saleable' => 'boolean',
         ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Query Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    public function scopeForStore(Builder $query, int $storeId): Builder
+    {
+        return $query->where('store_id', $storeId);
+    }
+
+    public function scopeAvailable(Builder $query): Builder
+    {
+        return $query->where('remaining_qty', '>', 0)->where('is_saleable', true);
     }
 
     /*

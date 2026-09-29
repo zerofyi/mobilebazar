@@ -16,8 +16,12 @@ return new class extends Migration
             $table->foreignId('product_variant_id')->nullable()->constrained('product_variants')->nullOnDelete();
 
             $table->string('manual_item_name')->nullable();
-            $table->string('imei1', 50)->nullable()->unique();
-            $table->string('imei2', 50)->nullable()->unique();
+
+            // NOT globally unique — a device can have multiple rows over its life
+            // via buyback (sold, bought back, sold again). Uniqueness enforced
+            // only among currently-active rows, via the generated columns below.
+            $table->string('imei1', 50)->nullable()->index();
+            $table->string('imei2', 50)->nullable()->index();
             $table->string('serial_number', 100)->nullable()->index();
 
             $table->string('device_condition', 50)->default('used'); // 'new', 'used', 'refurbished'
@@ -31,16 +35,28 @@ return new class extends Migration
             $table->boolean('is_saleable')->default(true);
             $table->string('status', 30)->default('available')->index(); // 'available', 'reserved', 'sold'
 
-            // Unit Valuation
-            $table->decimal('landed_cost', 12, 2)->default(0.00); // Total cash paid out of pocket
-            $table->decimal('base_cost', 12, 2)->default(0.00); // Net asset cost (Excl. claimable GST)
-            $table->decimal('wholesale_price', 12, 2)->nullable();
-            $table->decimal('selling_price', 12, 2)->nullable(); // Inclusive MRP retail price
+            // Generated: NULL unless the row is currently active. Must come
+            // after `status` — MySQL generated columns can only reference
+            // columns already defined earlier in the same CREATE TABLE.
+            $table->string('active_imei1', 50)->nullable()
+                ->storedAs("CASE WHEN status IN ('available','reserved') THEN imei1 ELSE NULL END");
+            $table->string('active_imei2', 50)->nullable()
+                ->storedAs("CASE WHEN status IN ('available','reserved') THEN imei2 ELSE NULL END");
+            $table->string('active_serial', 100)->nullable()
+                ->storedAs("CASE WHEN status IN ('available','reserved') THEN serial_number ELSE NULL END");
 
-            // Margin Scheme Flag (Auto-set for used/pv stock)
+            $table->unique('active_imei1', 'uniq_active_imei1');
+            $table->unique('active_imei2', 'uniq_active_imei2');
+            $table->unique('active_serial', 'uniq_active_serial');
+
+            // Unit Valuation
+            $table->decimal('landed_cost', 12, 2)->default(0.00);
+            $table->decimal('base_cost', 12, 2)->default(0.00);
+            $table->decimal('wholesale_price', 12, 2)->nullable();
+            $table->decimal('selling_price', 12, 2)->nullable();
+
             $table->boolean('is_margin_scheme')->default(false);
 
-            // Source Links
             $table->foreignId('purchase_order_id')->nullable()->constrained('purchase_orders')->nullOnDelete();
             $table->foreignId('purchase_order_item_id')->nullable()->constrained('purchase_order_items')->nullOnDelete();
 

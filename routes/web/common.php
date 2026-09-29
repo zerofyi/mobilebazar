@@ -145,6 +145,7 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/', [SaleEntryController::class, 'index'])->name('index');
         Route::get('/create', [SaleEntryController::class, 'create'])->name('create');
         Route::post('/', [SaleEntryController::class, 'store'])->name('store');
+        Route::get('/stock/search', [SaleEntryController::class, 'stockSearch'])->name('stock.search');
 
         // 2. Custom action routes on specific items (Place BEFORE general show/update/destroy)
         Route::get('/{sale}/print', [SaleEntryController::class, 'print'])->name('print');

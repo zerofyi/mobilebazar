@@ -47,6 +47,14 @@ final class AccountingException extends RuntimeException
         ));
     }
 
+    public static function saleTotalsMismatch(string $inv, int $diffPaise): self
+    {
+        return new self(sprintf(
+            'Sale %s totals do not reconcile: client preview differs from server evaluation by %.2f.',
+            $inv, $diffPaise / 100
+        ));
+    }
+
     public static function overpaid(string $po): self
     {
         return new self("Purchase {$po}: paid_amount exceeds grand_total.");

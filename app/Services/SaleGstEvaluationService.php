@@ -1,0 +1,167 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Services;
+
+use App\Models\Store;
+
+/**
+ * Server-side fiscal evaluation for sales.
+ *
+ * The frontend sends the USER'S CHOICES — unit prices, line discounts,
+ * is_gst_billed, is_intra_state, tax_type per line. Those are honored exactly
+ * as sent; this service never flips them.
+ *
+ * What this service DOES compute, from database truth, is the MONEY:
+ * every sold unit's / batch's landed_cost and is_margin_scheme flag live in
+ * the DB, so only the backend can authoritatively work out taxable values,
+ * GST, and COGS. The POS preview (sale-context.tsx) implements the identical
+ * formulas, so preview and posting agree by construction; SaleService rejects
+ * the submission if they drift beyond 5 paise (tamper / stale stock safety).
+ *
+ * Per-unit math:
+ *   discPerUnit = line.discount_amount / line.qty
+ *   net         = line.unit_price - discPerUnit          (what the buyer pays, pre exclusive-tax)
+ *   - GST not billed, or rate 0 : tax = 0, taxable = net, total = net
+ *   - margin scheme row         : margin = max(0, net - landed_cost)
+ *                                 tax = margin * r / (100 + r)   [embedded in price]
+ *                                 taxable = net - tax, total = net
+ *   - exclusive                 : taxable = net, tax = net * r / 100, total = net + tax
+ *   - inclusive                 : tax = net * r / (100 + r), taxable = net - tax, total = net
+ *
+ * Header: subtotal = Σ taxable, tax_amount = Σ tax,
+ *         grand_total = subtotal + tax_amount - discount_amount(bill) + round_off.
+ * taxable_value is always derivable as line_total - tax_amount, so no schema
+ * change was needed on invoice_items.
+ */
+final class SaleGstEvaluationService
+{
+    /**
+     * @param array $data    Validated sale payload (StoreSaleRequest).
+     * @param array $costings Per line-index, the locked stock behind the sale:
+     *   $costings[$lineIndex] = list of [
+     *     'qty' => int, 'landed_cost' => float, 'is_margin_scheme' => bool,
+     *     'stock_unit_id' => ?int, 'stock_batch_id' => ?int,
+     *     'device_condition' => ?string,          // serialized only, for new/used summary split
+     *   ]
+     *
+     * @return array{
+     *   rows: list<array{
+     *     line_index: int, qty: int, stock_unit_id: ?int, stock_batch_id: ?int,
+     *     unit_price: float, discount_amount: float, taxable_value: float,
+     *     tax_pct: float, tax_amount: float, line_total: float,
+     *     is_margin_scheme: bool, landed_cost: float, device_condition: ?string,
+     *   }>,
+     *   subtotal: float, tax_amount: float, discount_amount: float,
+     *   round_off: float, grand_total: float, cogs_total: float,
+     * }
+     */
+    public function evaluate(Store $store, array $data, array $costings): array
+    {
+        $isGstBilled = (bool) $data['is_gst_billed'];
+
+        $rows      = [];
+        $subtotal  = 0.0;
+        $taxTotal  = 0.0;
+        $cogsTotal = 0.0;
+
+        foreach ($data['lines'] as $lineIndex => $line) {
+            $qty          = max(1, (int) $line['qty']);
+            $discPerUnit  = $this->r2(((float) $line['discount_amount']) / $qty);
+            $unitPrice    = $this->r2($line['unit_price']);
+            $net          = $this->r2($unitPrice - $discPerUnit);
+            $rate         = (float) $line['tax_pct'];
+            $entries      = $costings[$lineIndex] ?? [];
+
+            // Manual (non-catalog) lines have no stock behind them.
+            if ($entries === []) {
+                $entries = [[
+                    'qty' => $qty, 'landed_cost' => 0.0, 'is_margin_scheme' => false,
+                    'stock_unit_id' => null, 'stock_batch_id' => null, 'device_condition' => null,
+                ]];
+            }
+
+            foreach ($entries as $entry) {
+                $entryQty = (int) $entry['qty'];
+                $landed   = (float) $entry['landed_cost'];
+                $margin   = (bool) $entry['is_margin_scheme'];
+
+                [$taxable, $tax, $total] = $this->evaluateUnit($net, $rate, (string) $line['tax_type'], $landed, $margin, $isGstBilled);
+
+                $rows[] = [
+                    'line_index'       => $lineIndex,
+                    'qty'              => $entryQty,
+                    'stock_unit_id'    => $entry['stock_unit_id'],
+                    'stock_batch_id'   => $entry['stock_batch_id'],
+                    'unit_price'       => $unitPrice,
+                    'discount_amount'  => $this->r2($discPerUnit * $entryQty),
+                    'taxable_value'    => $this->r2($taxable * $entryQty),
+                    'tax_pct'          => $rate,
+                    'tax_amount'       => $this->r2($tax * $entryQty),
+                    'line_total'       => $this->r2($total * $entryQty),
+                    'is_margin_scheme' => $margin && $isGstBilled,
+                    'landed_cost'      => $landed,
+                    'device_condition' => $entry['device_condition'] ?? null,
+                ];
+
+                $subtotal  += $taxable * $entryQty;
+                $taxTotal  += $tax * $entryQty;
+                $cogsTotal += $landed * $entryQty;
+            }
+        }
+
+        $subtotal       = $this->r2($subtotal);
+        $taxTotal       = $this->r2($taxTotal);
+        $discountAmount = $this->r2($data['discount_amount'] ?? 0);
+        $shippingCharge = $this->r2($data['shipping_charge'] ?? 0);
+        $roundOff       = $this->r2($data['round_off'] ?? 0);
+        $grandTotal     = $this->r2($subtotal + $taxTotal - $discountAmount + $shippingCharge + $roundOff);
+
+        return [
+            'rows'            => $rows,
+            'subtotal'        => $subtotal,
+            'tax_amount'      => $taxTotal,
+            'discount_amount' => $discountAmount,
+            'shipping_charge' => $shippingCharge,
+            'round_off'       => $roundOff,
+            'grand_total'     => $grandTotal,
+            'cogs_total'      => $this->r2($cogsTotal),
+        ];
+    }
+
+    /**
+     * @return array{0: float, 1: float, 2: float} [taxable, tax, total] per unit
+     */
+    private function evaluateUnit(float $net, float $rate, string $taxType, float $landed, bool $margin, bool $isGstBilled): array
+    {
+        if (! $isGstBilled || $rate <= 0) {
+            return [$net, 0.0, $net];
+        }
+
+        if ($margin) {
+            // Margin scheme (Rule 32(5)): GST only on (selling - purchase price),
+            // embedded in the price the buyer pays.
+            $marginValue = max(0.0, $net - $landed);
+            $tax         = $this->r2($marginValue * $rate / (100 + $rate));
+
+            return [$this->r2($net - $tax), $tax, $net];
+        }
+
+        if ($taxType === 'exclusive') {
+            $tax = $this->r2($net * $rate / 100);
+
+            return [$net, $tax, $this->r2($net + $tax)];
+        }
+
+        // inclusive
+        $tax = $this->r2($net * $rate / (100 + $rate));
+
+        return [$this->r2($net - $tax), $tax, $net];
+    }
+
+    private function r2(float|int|string|null $n): float
+    {
+        return round((float) $n + 1e-10, 2);
+    }
+}

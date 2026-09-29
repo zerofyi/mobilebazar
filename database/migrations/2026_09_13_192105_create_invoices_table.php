@@ -16,12 +16,13 @@ return new class extends Migration
             $table->uuid('uuid')->unique();
             $table->string('identity', 20)->unique();
 
-            $table->string('invoice_number', 50)->unique();
+            $table->string('invoice_number', 50);
             $table->uuid('idempotency_key')->nullable()->unique();
 
             $table->foreignId('store_id')->constrained('stores')->cascadeOnDelete();
-            $table->foreignId('customer_id')->nullable()->constrained('customers')->nullOnDelete();
             $table->foreignId('channel_id')->nullable()->constrained('channels')->nullOnDelete();
+
+            $table->nullableMorphs('party'); // Customer or Supplier
 
             $table->foreignId('order_id')->nullable()->constrained('orders')->nullOnDelete();
 
@@ -33,7 +34,10 @@ return new class extends Migration
 
             $table->decimal('subtotal', 12, 2)->default(0.00);
             $table->decimal('tax_amount', 12, 2)->default(0.00);
+
             $table->decimal('discount_amount', 12, 2)->default(0.00);
+            $table->decimal('shipping_charge', 12, 2)->default(0.00);
+
             $table->decimal('round_off', 8, 2)->default(0.00);
             $table->decimal('grand_total', 12, 2)->default(0.00);
 
@@ -49,8 +53,16 @@ return new class extends Migration
 
             $table->timestamps();
 
+            $table->unique(['store_id', 'invoice_number'], 'invoices_store_invoice_unique');
+
             $table->index(['store_id', 'invoice_date', 'payment_status'], 'idx_invoices_store_date_status');
-            $table->index(['customer_id', 'payment_status'], 'idx_invoices_customer_status');
+            $table->index(['party_type', 'party_id', 'payment_status'], 'idx_invoices_party_status');
+        });
+
+        Schema::create('sale_number_sequences', function (Blueprint $table) {
+            $table->unsignedBigInteger('store_id')->primary();
+            $table->unsignedBigInteger('next_number')->default(1);
+            $table->timestamps();
         });
     }
 
@@ -60,5 +72,6 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('invoices');
+        Schema::dropIfExists('sale_number_sequences');
     }
 };

@@ -47,14 +47,20 @@ class StockUnit extends Model
         return ['uuid'];
     }
 
+    // active_imei1 / active_imei2 / active_serial are DB-generated columns
+    // (see the stock_units migration) — deliberately excluded from Fillable
+    // above (never mass-assign them) and hidden from array/JSON output, since
+    // they're an internal uniqueness mechanism, not business data to display.
+    protected $hidden = ['active_imei1', 'active_imei2', 'active_serial'];
+
     protected function casts(): array
     {
         return [
             'store_id' => 'integer',
             'product_variant_id' => 'integer',
-            'health_id' => 'integer',
             'purchase_order_id' => 'integer',
             'purchase_order_item_id' => 'integer',
+            'health_id' => 'integer',
             'activation_date' => 'date',
             'warranty_expiry_date' => 'date',
             'is_saleable' => 'boolean',

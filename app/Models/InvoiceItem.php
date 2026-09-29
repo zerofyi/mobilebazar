@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
     'invoice_id',
@@ -18,6 +19,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'quantity',
     'unit_price',
     'tax_category_id',
+    'tax_type',
+    'is_margin_scheme',
+    'landed_cost',
     'tax_pct',
     'tax_amount',
     'discount_amount',
@@ -62,5 +66,10 @@ class InvoiceItem extends Model
     public function taxCategory(): BelongsTo
     {
         return $this->belongsTo(TaxCategory::class);
+    }
+
+    public function batchAllocations(): HasMany
+    {
+        return $this->hasMany(InvoiceItemBatchAllocation::class);
     }
 }
