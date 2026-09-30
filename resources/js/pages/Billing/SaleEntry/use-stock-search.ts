@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { StockSearchResult } from "./sale-context";
+import type { SearchMode, StockSearchResponse } from "./sale-context";
 
 function getCsrfToken(): string {
     return document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? "";
@@ -16,17 +16,15 @@ async function jsonGet<T>(url: string, params: Record<string, string>, signal?: 
     return res.json() as Promise<T>;
 }
 
-interface StockSearchResponse {
-    results: StockSearchResult[];
-}
-
 // ─── POS stock search ────────────────────────────────────────────────────────
-// One omnibox for IMEI 1/2, serial, barcode, SKU, product/variant name.
-// Debounced 250ms, abortable, min 2 chars. Exact IMEI/serial hits come back
-// with `exact_unit` set so the UI can add the unit instantly.
+// Mode-scoped: serialized → stock_units only (exact IMEI/serial adds the unit
+// instantly, name matches manual_item_name); bulk → non-serialized variants
+// with their saleable batches (FIFO first, cashier may pick another);
+// all → both. Debounced 250ms, abortable, min 2 chars.
 export function useStockSearch() {
     const [query, setQuery] = useState("");
-    const [results, setResults] = useState<StockSearchResult[]>([]);
+    const [mode, setMode] = useState<SearchMode>("serialized");
+    const [data, setData] = useState<StockSearchResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [searched, setSearched] = useState(false);
     const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -35,7 +33,7 @@ export function useStockSearch() {
         if (timer.current) clearTimeout(timer.current);
         const q = query.trim();
         if (q.length < 2) {
-            setResults([]);
+            setData(null);
             setLoading(false);
             setSearched(false);
             return;
@@ -44,12 +42,12 @@ export function useStockSearch() {
         timer.current = setTimeout(async () => {
             setLoading(true);
             try {
-                const data = await jsonGet<StockSearchResponse>("/app/sales/stock/search", { q }, controller.signal);
-                setResults(Array.isArray(data.results) ? data.results : []);
+                const res = await jsonGet<StockSearchResponse>("/app/sales/stock/search", { q, mode }, controller.signal);
+                setData(res);
                 setSearched(true);
             } catch (e: unknown) {
                 if ((e as { name?: string })?.name !== "AbortError") {
-                    setResults([]);
+                    setData(null);
                     setSearched(true);
                 }
             } finally {
@@ -60,15 +58,21 @@ export function useStockSearch() {
             if (timer.current) clearTimeout(timer.current);
             controller.abort();
         };
-    }, [query]);
+    }, [query, mode]);
 
-    const clear = useCallback(() => {
-        setQuery("");
-        setResults([]);
+    const setSearchMode = useCallback((m: SearchMode) => {
+        setMode(m);
+        setData(null);
         setSearched(false);
     }, []);
 
-    return { query, setQuery, results, loading, searched, clear };
+    const clear = useCallback(() => {
+        setQuery("");
+        setData(null);
+        setSearched(false);
+    }, []);
+
+    return { query, setQuery, mode, setSearchMode, data, loading, searched, clear };
 }
 
 // ─── Supplier ("party") search ───────────────────────────────────────────────

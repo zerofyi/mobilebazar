@@ -25,11 +25,11 @@ return new class extends Migration
             // barcode/sku) stays identical across all of them.
             $table->string('product_condition', 50)->default('new'); // 'new', 'used', 'refurbished'
             $table->string('overall_health', 50)->nullable(); // only meaningful when condition != 'new'
+            $table->string('remaining_warranty', 100)->nullable();
 
             $table->unsignedInteger('received_qty')->default(0);
             $table->unsignedInteger('remaining_qty')->default(0);
 
-            $table->decimal('unit_cost', 12, 2)->default(0.00);
             $table->decimal('base_cost', 12, 2)->default(0.00);
             $table->decimal('landed_cost', 12, 2)->default(0.00);
 
@@ -39,7 +39,6 @@ return new class extends Migration
             $table->decimal('wholesale_price', 12, 2)->nullable();
             $table->decimal('selling_price', 12, 2)->nullable();
 
-            $table->enum('tax_type', ['inclusive', 'exclusive'])->default('exclusive');
             $table->boolean('is_margin_scheme')->default(false);
 
             // NEW — mirrors stock_units.is_saleable. Lets a batch be received

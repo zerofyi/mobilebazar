@@ -5,10 +5,11 @@ import SaleHeader from "./partials/SaleHeader";
 import PosSearchBar from "./partials/PosSearchBar";
 import CartTable from "./partials/CartTable";
 import PartyStrip from "./partials/PartyStrip";
+import InvoiceMeta from "./partials/InvoiceMeta";
 import SaleTotals from "./partials/SaleTotals";
 import {
     SaleProvider, useSale, buildSalePayload, round2,
-    type StoreInfo, type CategoryOption, type StockSearchResult,
+    type StoreInfo, type CategoryOption,
 } from "./sale-context";
 import { useFlashToast } from "@/hooks/use-flash-toast";
 
@@ -16,7 +17,6 @@ interface SaleEntryProps {
     store: StoreInfo;
     categories: CategoryOption[];
     initialInvoiceNumber: string;
-    initialProducts: StockSearchResult[];
 }
 
 const PARK_PREFIX = "pos-park-";
@@ -25,7 +25,7 @@ function parkKey(storeId: number): string {
     return `${PARK_PREFIX}${storeId}`;
 }
 
-function SaleEntryInner({ initialProducts }: { initialProducts: StockSearchResult[] }) {
+function SaleEntryInner() {
     const {
         state, dispatch, store, computedLines,
         subtotal, taxAmount, roundOff, grandTotal, dueAmount,
@@ -129,24 +129,23 @@ function SaleEntryInner({ initialProducts }: { initialProducts: StockSearchResul
             <Head title="New Sale" />
             <div className="min-h-[calc(100vh-3.5rem)] bg-muted-foreground/5">
                 <SaleHeader onPark={handlePark} onClear={handleClear} isSubmitting={isSubmitting} />
-                <div className="mx-auto px-4 py-4 lg:px-6">
-                    <div className="flex flex-col gap-4">
-                        <PartyStrip />
-                        <div className="grid items-start gap-4 lg:grid-cols-[1fr_400px]">
-                            <div className="flex min-w-0 flex-col gap-4">
-                                <PosSearchBar initialProducts={initialProducts} />
-                                <CartTable />
-                            </div>
-                            <div className="min-w-0 lg:sticky lg:top-20">
-                                <SaleTotals
-                                    onSubmit={handleSubmit}
-                                    onPark={handlePark}
-                                    isSubmitting={isSubmitting}
-                                    errors={errors}
-                                    isValid={isValid}
-                                    triedSubmit={triedSubmit}
-                                />
-                            </div>
+                <div className="mx-auto px-4 py-4 pb-8 lg:px-6">
+                    <div className="grid items-start gap-4 lg:grid-cols-[1fr_400px]">
+                        <div className="flex min-w-0 flex-col gap-4">
+                            <PartyStrip />
+                            <PosSearchBar />
+                            <CartTable />
+                        </div>
+                        <div className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-20">
+                            <InvoiceMeta />
+                            <SaleTotals
+                                onSubmit={handleSubmit}
+                                onPark={handlePark}
+                                isSubmitting={isSubmitting}
+                                errors={errors}
+                                isValid={isValid}
+                                triedSubmit={triedSubmit}
+                            />
                         </div>
                     </div>
                 </div>
@@ -155,7 +154,7 @@ function SaleEntryInner({ initialProducts }: { initialProducts: StockSearchResul
     );
 }
 
-export default function SaleEntry({ store, categories, initialInvoiceNumber, initialProducts }: SaleEntryProps) {
+export default function SaleEntry({ store, categories, initialInvoiceNumber }: SaleEntryProps) {
     useFlashToast();
     void categories;
 
@@ -163,7 +162,7 @@ export default function SaleEntry({ store, categories, initialInvoiceNumber, ini
         <>
             <Head title={`New Sale — ${store.name}`} />
             <SaleProvider store={store} initialInvoiceNumber={initialInvoiceNumber}>
-                <SaleEntryInner initialProducts={initialProducts} />
+                <SaleEntryInner />
             </SaleProvider>
         </>
     );

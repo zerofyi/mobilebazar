@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { UserRound, Building2, Search, X, Plus, BadgeCheck, CalendarDays } from "lucide-react";
+import { UserRound, Building2, Search, X, Plus, BadgeCheck } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,8 +25,9 @@ function toSaleParty(raw: any, type: PartyType): SaleParty | null {
 
 /**
  * Party picker strip: customer | supplier tabs, debounced search, global
- * quick-add modals (same ones the purchase flow uses), invoice date and the
- * CGST+SGST / IGST movement toggle. Every sale requires a selected party.
+ * quick-add modals (same ones the purchase flow uses). Every sale requires
+ * a selected party. Invoice meta (date, bill type, GST toggles) lives in
+ * the InvoiceMeta card on the right — this strip is party-only.
  */
 export default function PartyStrip() {
     const { state, dispatch, store } = useSale();
@@ -58,6 +59,7 @@ export default function PartyStrip() {
 
     return (
         <div className="rounded-xl border border-border bg-card p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Customer / Party</p>
             <div className="flex flex-wrap items-center gap-2">
                 <div className="flex rounded-md border border-border bg-muted/40 p-0.5" role="group" aria-label="Party type">
                     {(["customer", "supplier"] as const).map((t) => (
@@ -148,35 +150,6 @@ export default function PartyStrip() {
                 <Button type="button" variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
                     <Plus className="size-3.5 mr-1" /> New {partyType === "customer" ? "Customer" : "Party"}
                 </Button>
-
-                <div className="relative">
-                    <CalendarDays className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
-                    <Input
-                        type="date"
-                        value={state.invoiceDate}
-                        onChange={(e) => dispatch({ type: "SET_INVOICE_DATE", payload: e.target.value })}
-                        className="h-9 pl-8 text-sm"
-                        aria-label="Invoice date"
-                    />
-                </div>
-
-                {state.isGstBilled && (
-                    <div className="flex rounded-md border border-border p-0.5 text-[11px] font-medium" role="group" aria-label="Tax movement">
-                        {(["intra", "inter"] as const).map((m) => (
-                            <button
-                                key={m}
-                                type="button"
-                                onClick={() => dispatch({ type: "SET_TAX_MOVEMENT", payload: m })}
-                                className={cn(
-                                    "rounded px-2 py-1.5",
-                                    state.taxMovement === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                                )}
-                            >
-                                {m === "intra" ? "CGST+SGST" : "IGST"}
-                            </button>
-                        ))}
-                    </div>
-                )}
             </div>
             {!selected && (
                 <p className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">

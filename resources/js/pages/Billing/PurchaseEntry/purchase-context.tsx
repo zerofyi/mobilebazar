@@ -209,7 +209,11 @@ export interface SubmitLine {
     is_serialized: boolean; ordered_qty: number; unit_cost: number;
     tax_type: "inclusive" | "exclusive"; tax_pct: number; is_margin_scheme: boolean;
     base_cost: number; landed_cost: number; tax_amount: number;
-    discount_amount: number; line_total: number; units: SubmitUnit[];
+    discount_amount: number; line_total: number;
+    condition_code: string; overall_health: string | null;
+    remaining_warranty: string | null;
+    wholesale_price: number; selling_price: number;
+    units: SubmitUnit[];
 }
 
 export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendorIsRegistered: boolean, hasParty: boolean): SubmitLine[] {
@@ -217,9 +221,14 @@ export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendor
     const map = new Map<string, LineRow[]>();
 
     for (const row of rows) {
-        // Grouping hardened: Includes discount to prevent avgCost skewing on identically priced items
+        // Bulk rows additionally key on quality + price overrides + warranty, because
+        // those are persisted at batch level — bulk rows that differ only in these
+        // must not merge. (Serialized rows keep the old key: their quality/prices
+        // live per-unit.)
         const key = row.product_variant_id != null
-            ? `v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}`
+            ? (row.is_serialized
+                ? `v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}`
+                : `v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}_q:${row.quality.trim()}_w:${row.wholesale}_s:${row.selling}_wr:${row.warrantyMode === "D" ? row.warrantyValue.trim() : ""}`)
             : `m:${row.id}`;
 
         if (!map.has(key)) { orderKeys.push(key); map.set(key, []); }
@@ -259,6 +268,13 @@ export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendor
             tax_amount: round2(totalTax),
             discount_amount: round2(totalDisc),
             line_total: round2(totalLine),
+            // Bulk condition + warranty + price overrides, persisted on stock_batches.
+            // Only duration-style warranty ('D' mode) is stored, mirroring stock_units.
+            condition_code: (first.condition || 'NEW').trim().toUpperCase(),
+            overall_health: first.quality.trim() || null,
+            remaining_warranty: first.warrantyMode === "D" ? (first.warrantyValue.trim() || null) : null,
+            wholesale_price: first.wholesale,
+            selling_price: first.selling,
             units: group.map((r) => {
                 const c = evalLineCost(r, flags, vendorIsRegistered, hasParty);
                 const bh = parseInt(r.batteryHealth, 10);

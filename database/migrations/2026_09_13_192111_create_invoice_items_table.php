@@ -17,6 +17,7 @@ return new class extends Migration
             $table->foreignId('invoice_id')->constrained('invoices')->cascadeOnDelete();
             $table->foreignId('product_variant_id')->nullable()->constrained('product_variants')->nullOnDelete();
             $table->string('manual_item_name')->nullable();
+            $table->string('warranty', 100)->nullable();
 
             $table->foreignId('stock_unit_id')->nullable()->constrained('stock_units')->nullOnDelete();
             $table->foreignId('stock_batch_id')->nullable()->constrained('stock_batches')->nullOnDelete();

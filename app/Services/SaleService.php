@@ -116,6 +116,10 @@ final class SaleService
             throw MonthLockedException::for($store->id, $invoiceDate->format('Y-m'));
         }
 
+        // S1: a store that is NOT GST-registered can never bill GST, whatever
+        // the client sent. Non-registered sales are always a Bill of Supply.
+        $data['is_gst_billed'] = $store->is_gst_registered && (bool) ($data['is_gst_billed'] ?? false);
+
         $partyClass = $data['party_type'] === 'supplier' ? Supplier::class : Customer::class;
         /** @var Customer|Supplier $party */
         $party = $partyClass::findOrFail((int) $data['party_id']);
@@ -186,6 +190,9 @@ final class SaleService
                 'invoice_id'       => $invoice->id,
                 'product_variant_id' => ! empty($line['product_variant_id']) ? (int) $line['product_variant_id'] : null,
                 'manual_item_name' => $line['manual_item_name'] ?? null,
+                // Customer-facing warranty for this line: defaults from the
+                // sold unit / batch, but the POS lets the cashier override it.
+                'warranty'         => $this->blankToNull($line['warranty'] ?? null),
                 'stock_unit_id'    => $row['stock_unit_id'],
                 'stock_batch_id'   => $row['stock_batch_id'],
                 'quantity'         => $row['qty'],
@@ -294,6 +301,9 @@ final class SaleService
             }
 
             // Bulk: FIFO across batches with remaining qty, oldest first.
+            // The POS may pass a preferred_batch_id (cashier picked a batch);
+            // it is allocated FIRST, the rest continues FIFO. Batches held
+            // for QC (is_saleable = false) are never allocated.
             $qty = max(1, (int) ($line['qty'] ?? 1));
 
             if (! $variantId) {
@@ -310,14 +320,29 @@ final class SaleService
             }
 
             $needed  = $qty;
+            $preferredBatchId = ! empty($line['preferred_batch_id']) ? (int) $line['preferred_batch_id'] : null;
+
             $batches = StockBatch::query()
                 ->where('store_id', $store->id)
                 ->where('product_variant_id', $variantId)
                 ->where('remaining_qty', '>', 0)
+                ->where('is_saleable', true)
+                // Preferred batch first; the where-clauses above still apply,
+                // so a foreign/empty batch id degrades to plain FIFO safely.
+                ->when($preferredBatchId, fn ($q) => $q->orderByRaw('id = ? desc', [$preferredBatchId]))
                 ->orderBy('created_at')
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
+
+            if ($preferredBatchId && ! $batches->contains('id', $preferredBatchId)) {
+                // The requested batch is not saleable stock of this
+                // store/variant (foreign id, empty, or QC-held): fail loudly
+                // rather than silently selling from a different batch.
+                throw ValidationException::withMessages([
+                    "lines.{$i}.preferred_batch_id" => 'The selected batch is not available for this store and product.',
+                ]);
+            }
 
             foreach ($batches as $batch) {
                 if ($needed <= 0) {
@@ -546,5 +571,12 @@ final class SaleService
     private function r2(float|int|string|null $n): float
     {
         return round((float) $n + 1e-10, 2);
+    }
+
+    private function blankToNull(mixed $v): ?string
+    {
+        $v = is_string($v) ? trim($v) : $v;
+
+        return ($v === '' || $v === null) ? null : (string) $v;
     }
 }

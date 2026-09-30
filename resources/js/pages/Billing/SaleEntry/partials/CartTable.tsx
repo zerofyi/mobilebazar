@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Minus, Plus, Trash2, X, PlusCircle } from "lucide-react";
+import React from "react";
+import { Minus, Plus, Trash2, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +18,7 @@ function NumInput({ value, onChange, className, ariaLabel }: {
             onChange={(e) => onChange(Math.max(0, parseFloat(e.target.value) || 0))}
             onFocus={(e) => e.target.select()}
             aria-label={ariaLabel}
-            className={cn("h-8 w-24 border-transparent bg-transparent px-1.5 text-right text-sm shadow-none hover:border-border focus:border-primary focus:bg-card", className)}
+            className={cn("h-8 w-full border-transparent bg-transparent px-1.5 text-right text-sm shadow-none hover:border-border focus:border-primary focus:bg-card", className)}
         />
     );
 }
@@ -72,8 +72,8 @@ function LineRow({ line, index }: { line: ComputedLine; index: number }) {
     return (
         <TableRow className={cn(line._margin && "bg-amber-500/[0.04]")}>
             <TableCell className="w-8 text-muted-foreground tabular-nums">{index + 1}</TableCell>
-            <TableCell>
-                <p className="text-[13px] font-medium leading-tight">{line.product_name}</p>
+            <TableCell className="max-w-0">
+                <p className="truncate text-[13px] font-medium leading-tight" title={line.product_name}>{line.product_name}</p>
                 <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                     {line.sku && <span className="font-mono">{line.sku}</span>}
                     {line.hsn_code && <span>HSN {line.hsn_code}</span>}
@@ -83,13 +83,13 @@ function LineRow({ line, index }: { line: ComputedLine; index: number }) {
                 {line.is_serialized && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                         {line.unit_metas.map((u) => (
-                            <span key={u.id} className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px]">
-                                {u.imei1 || u.serial_number || `#${u.id}`}
-                                <span className="text-muted-foreground">{u.device_condition}</span>
+                            <span key={u.id} className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px]">
+                                <span className="truncate">{u.imei1 || u.serial_number || `#${u.id}`}</span>
+                                <span className="shrink-0 text-muted-foreground">{u.device_condition}</span>
                                 <button
                                     type="button"
                                     aria-label="Remove unit"
-                                    className="ml-0.5 text-muted-foreground hover:text-destructive"
+                                    className="ml-0.5 shrink-0 text-muted-foreground hover:text-destructive"
                                     onClick={() => removeUnit()}
                                 >
                                     <X className="size-3" />
@@ -98,9 +98,14 @@ function LineRow({ line, index }: { line: ComputedLine; index: number }) {
                         ))}
                     </div>
                 )}
+                {!line.is_serialized && line.batch_label && (
+                    <p className="mt-1 truncate text-[11px] text-muted-foreground" title={line.batch_label}>
+                        Batch <span className="font-mono font-medium text-foreground">{line.batch_label}</span>
+                    </p>
+                )}
             </TableCell>
-            <TableCell><QtyStepper line={line} /></TableCell>
-            <TableCell>
+            <TableCell className="w-[104px]"><QtyStepper line={line} /></TableCell>
+            <TableCell className="w-24">
                 <NumInput
                     value={line.unit_price}
                     ariaLabel="Unit price"
@@ -109,18 +114,31 @@ function LineRow({ line, index }: { line: ComputedLine; index: number }) {
                 />
                 {belowMin && <p className="text-right text-[10px] text-destructive">below min ₹{inr(line.min_selling_price, 0)}</p>}
             </TableCell>
-            <TableCell>
+            <TableCell className="w-20">
                 <NumInput
                     value={line.discount_amount}
                     ariaLabel="Line discount"
                     onChange={(n) => dispatch({ type: "UPDATE_LINE", payload: { key: line.key, patch: { discount_amount: n } } })}
                 />
             </TableCell>
-            <TableCell className="text-right">
-                <p className="text-[13px] tabular-nums">₹{inr(line._taxable)}</p>
-                <p className="text-[11px] text-muted-foreground tabular-nums">+ ₹{inr(line._tax)} tax</p>
+            <TableCell className="w-28">
+                <Input
+                    value={line.warranty ?? ""}
+                    onChange={(e) => dispatch({ type: "UPDATE_LINE", payload: { key: line.key, patch: { warranty: e.target.value || null } } })}
+                    onFocus={(e) => e.target.select()}
+                    placeholder="e.g. 6 months"
+                    aria-label="Line warranty"
+                    title={line.warranty ?? "Warranty the customer gets — defaults from the unit/batch, editable here"}
+                    className="h-8 w-full border-transparent bg-transparent px-1.5 text-xs shadow-none hover:border-border focus:border-primary focus:bg-card"
+                />
             </TableCell>
-            <TableCell className="text-right text-sm font-semibold tabular-nums">₹{inr(line._lineTotal)}</TableCell>
+            <TableCell className="w-28 text-right">
+                <p className="text-[13px] tabular-nums">₹{inr(line._taxable)}</p>
+                <p className="text-[11px] text-muted-foreground tabular-nums">
+                    {state.isGstBilled && line.tax_pct > 0 ? `+ ₹${inr(line._tax)} (${line.tax_pct}%)` : `+ ₹${inr(line._tax)} tax`}
+                </p>
+            </TableCell>
+            <TableCell className="w-24 text-right text-sm font-semibold tabular-nums">₹{inr(line._lineTotal)}</TableCell>
             <TableCell className="w-10">
                 <Button type="button" variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => dispatch({ type: "REMOVE_LINE", payload: line.key })} aria-label="Remove line">
                     <Trash2 className="size-3.5" />
@@ -130,6 +148,11 @@ function LineRow({ line, index }: { line: ComputedLine; index: number }) {
     );
 }
 
+/*
+ * TEMPORARILY DISABLED (2026-09-30): manual item entry is hidden from the POS
+ * UI for now. The ADD_MANUAL_ITEM action + backend support stay intact —
+ * uncomment this component and its usage in CartTable below to re-enable.
+ *
 function ManualItemAdder() {
     const { dispatch } = useSale();
     const [adding, setAdding] = useState(false);
@@ -165,6 +188,7 @@ function ManualItemAdder() {
         </div>
     );
 }
+ */
 
 /**
  * Cart lines as a table, one row per line with all info, directly under the
@@ -182,7 +206,8 @@ export default function CartTable() {
                         <Badge variant="outline" className="ml-2 border-amber-500/50 text-amber-700 dark:text-amber-400">Wholesale prices</Badge>
                     )}
                 </p>
-                <ManualItemAdder />
+                {/* Manual item entry temporarily disabled — see ManualItemAdder above. */}
+                {/* <ManualItemAdder /> */}
             </div>
             {computedLines.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">
@@ -190,16 +215,17 @@ export default function CartTable() {
                 </div>
             ) : (
                 <div className="overflow-x-auto">
-                    <Table>
+                    <Table className="w-full table-fixed">
                         <TableHeader>
                             <TableRow>
                                 <TableHead className="w-8">#</TableHead>
                                 <TableHead>Item</TableHead>
-                                <TableHead>Qty</TableHead>
-                                <TableHead className="text-right">Price ₹</TableHead>
-                                <TableHead className="text-right">Disc ₹</TableHead>
-                                <TableHead className="text-right">Taxable + Tax</TableHead>
-                                <TableHead className="text-right">Total</TableHead>
+                                <TableHead className="w-[104px]">Qty</TableHead>
+                                <TableHead className="w-24 text-right">Price ₹</TableHead>
+                                <TableHead className="w-20 text-right">Disc ₹</TableHead>
+                                <TableHead className="w-28">Warranty</TableHead>
+                                <TableHead className="w-28 text-right">Taxable + Tax</TableHead>
+                                <TableHead className="w-24 text-right">Total</TableHead>
                                 <TableHead className="w-10" />
                             </TableRow>
                         </TableHeader>

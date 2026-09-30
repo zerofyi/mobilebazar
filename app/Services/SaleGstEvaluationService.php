@@ -10,7 +10,7 @@ use App\Models\Store;
  * Server-side fiscal evaluation for sales.
  *
  * The frontend sends the USER'S CHOICES — unit prices, line discounts,
- * is_gst_billed, is_intra_state, tax_type per line. Those are honored exactly
+ * is_gst_billed, is_intra_state per line. Those are honored exactly
  * as sent; this service never flips them.
  *
  * What this service DOES compute, from database truth, is the MONEY:
@@ -20,20 +20,26 @@ use App\Models\Store;
  * formulas, so preview and posting agree by construction; SaleService rejects
  * the submission if they drift beyond 5 paise (tamper / stale stock safety).
  *
+ * GST is ALWAYS inclusive when it applies: the price the buyer pays already
+ * contains the tax. (The legacy 'exclusive' tax_type is accepted in the
+ * payload for history but no longer changes the math.)
+ *
  * Per-unit math:
  *   discPerUnit = line.discount_amount / line.qty
- *   net         = line.unit_price - discPerUnit          (what the buyer pays, pre exclusive-tax)
+ *   net         = line.unit_price - discPerUnit          (what the buyer pays)
  *   - GST not billed, or rate 0 : tax = 0, taxable = net, total = net
  *   - margin scheme row         : margin = max(0, net - landed_cost)
  *                                 tax = margin * r / (100 + r)   [embedded in price]
  *                                 taxable = net - tax, total = net
- *   - exclusive                 : taxable = net, tax = net * r / 100, total = net + tax
- *   - inclusive                 : tax = net * r / (100 + r), taxable = net - tax, total = net
+ *   - otherwise (inclusive)     : tax = net * r / (100 + r), taxable = net - tax, total = net
  *
  * Header: subtotal = Σ taxable, tax_amount = Σ tax,
  *         grand_total = subtotal + tax_amount - discount_amount(bill) + round_off.
  * taxable_value is always derivable as line_total - tax_amount, so no schema
  * change was needed on invoice_items.
+ *
+ * S1–S5 document classification lives in ::documentType() and is mirrored
+ * by deriveDocument() in sale-context.tsx — keep the two in sync.
  */
 final class SaleGstEvaluationService
 {
@@ -131,6 +137,67 @@ final class SaleGstEvaluationService
     }
 
     /**
+     * S1–S5 GST sales document classification.
+     *
+     * B2B is decided by the buyer's GSTIN (suppliers carry one; customers do
+     * not have a GSTIN column, so a customer party is always B2C retail).
+     * $hasMargin is true when ANY invoice line is a margin-scheme line.
+     *
+     * Mirrors deriveDocument() in sale-context.tsx — keep the two in sync.
+     *
+     * @return array{code: string, label: string, buyer_kind: 'B2C'|'B2B', itc_eligible: bool, hsn_summary: bool, hide_tax: bool}
+     */
+    public static function documentType(bool $isGstBilled, ?string $partyGstin, bool $hasMargin): array
+    {
+        if (! $isGstBilled) {
+            // S1 — no GST charged (store not registered, or GST bill toggled
+            // off): Bill of Supply, 0% tax, no HSN summary, no ITC.
+            return [
+                'code' => 'BILL_OF_SUPPLY', 'label' => 'Bill of Supply',
+                'buyer_kind' => 'B2C', 'itc_eligible' => false,
+                'hsn_summary' => false, 'hide_tax' => false,
+            ];
+        }
+
+        $isB2B = $partyGstin !== null && $partyGstin !== '';
+
+        if ($isB2B && $hasMargin) {
+            // S5 — B2B margin scheme: tax on profit margin only, no ITC.
+            return [
+                'code' => 'B2B_MARGIN_INVOICE', 'label' => 'B2B Margin Tax Invoice',
+                'buyer_kind' => 'B2B', 'itc_eligible' => false,
+                'hsn_summary' => true, 'hide_tax' => true,
+            ];
+        }
+
+        if ($isB2B) {
+            // S4 — standard B2B: full-rate tax, HSN mandatory, 100% ITC.
+            return [
+                'code' => 'B2B_TAX_INVOICE', 'label' => 'B2B Tax Invoice',
+                'buyer_kind' => 'B2B', 'itc_eligible' => true,
+                'hsn_summary' => true, 'hide_tax' => false,
+            ];
+        }
+
+        if ($hasMargin) {
+            // S3 — B2C margin scheme (Rule 32(5)): tax on positive margin only.
+            // The printed receipt must NOT show the tax amount explicitly.
+            return [
+                'code' => 'B2C_MARGIN_INVOICE', 'label' => 'B2C Retail Invoice (Margin Scheme)',
+                'buyer_kind' => 'B2C', 'itc_eligible' => false,
+                'hsn_summary' => true, 'hide_tax' => true,
+            ];
+        }
+
+        // S2 — standard B2C retail: full-rate inclusive tax on selling price.
+        return [
+            'code' => 'B2C_TAX_INVOICE', 'label' => 'B2C Tax Invoice',
+            'buyer_kind' => 'B2C', 'itc_eligible' => false,
+            'hsn_summary' => true, 'hide_tax' => false,
+        ];
+    }
+
+    /**
      * @return array{0: float, 1: float, 2: float} [taxable, tax, total] per unit
      */
     private function evaluateUnit(float $net, float $rate, string $taxType, float $landed, bool $margin, bool $isGstBilled): array
@@ -141,20 +208,15 @@ final class SaleGstEvaluationService
 
         if ($margin) {
             // Margin scheme (Rule 32(5)): GST only on (selling - purchase price),
-            // embedded in the price the buyer pays.
+            // embedded in the price the buyer pays. Margin <= 0 → no tax.
             $marginValue = max(0.0, $net - $landed);
             $tax         = $this->r2($marginValue * $rate / (100 + $rate));
 
             return [$this->r2($net - $tax), $tax, $net];
         }
 
-        if ($taxType === 'exclusive') {
-            $tax = $this->r2($net * $rate / 100);
-
-            return [$net, $tax, $this->r2($net + $tax)];
-        }
-
-        // inclusive
+        // GST is always inclusive: the price the buyer pays already contains it.
+        // ($taxType is accepted for history but no longer changes the math.)
         $tax = $this->r2($net * $rate / (100 + $rate));
 
         return [$this->r2($net - $tax), $tax, $net];

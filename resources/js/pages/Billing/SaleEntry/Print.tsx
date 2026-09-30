@@ -17,7 +17,16 @@ export interface PrintInvoiceItem {
     igst_amount: number;
     line_total: number;
     is_margin_scheme: boolean;
+    warranty: string | null;
     imeis: string[];
+}
+
+export interface PrintHsnRow {
+    hsn_code: string;
+    qty: number;
+    taxable_value: number;
+    tax_amount: number;
+    line_total: number;
 }
 
 export interface PrintInvoice {
@@ -41,7 +50,16 @@ export interface PrintInvoice {
     paid_amount: number;
     due_amount: number;
     notes: string | null;
+    /** S1–S5 document classification (SaleGstEvaluationService::documentType). */
+    document_code: string;
+    document_label: string;
+    buyer_kind: "B2C" | "B2B";
+    itc_eligible: boolean;
+    show_hsn_summary: boolean;
+    /** Margin-scheme invoices must NOT show tax explicitly on the receipt. */
+    hide_tax: boolean;
     items: PrintInvoiceItem[];
+    hsn_summary: PrintHsnRow[];
 }
 
 export interface PrintStore {
@@ -106,9 +124,22 @@ function fmt(n: number): string {
 
 export default function SalePrint({ invoice, store }: Props) {
     const intra = invoice.is_intra_state;
-    const cgstTotal = invoice.items.reduce((s, i) => s + i.cgst_amount, 0);
-    const sgstTotal = invoice.items.reduce((s, i) => s + i.sgst_amount, 0);
-    const igstTotal = invoice.items.reduce((s, i) => s + i.igst_amount, 0);
+    // Displayed tax totals exclude margin-scheme lines: on a margin invoice the
+    // tax is embedded in the price and must never appear explicitly.
+    const taxableItems = invoice.hide_tax ? invoice.items.filter((i) => !i.is_margin_scheme) : invoice.items;
+    const cgstTotal = taxableItems.reduce((s, i) => s + i.cgst_amount, 0);
+    const sgstTotal = taxableItems.reduce((s, i) => s + i.sgst_amount, 0);
+    const igstTotal = taxableItems.reduce((s, i) => s + i.igst_amount, 0);
+    const allMargin = invoice.items.length > 0 && invoice.items.every((i) => i.is_margin_scheme);
+    // Tax columns are dropped entirely on a fully-margin invoice; on a mixed
+    // invoice they stay and margin lines read "incl.".
+    const showTaxCols = invoice.is_gst_billed && !(invoice.hide_tax && allMargin);
+    const taxCell = (it: PrintInvoiceItem, amount: number) =>
+        invoice.hide_tax && it.is_margin_scheme ? (
+            <span className="italic text-neutral-500" title="Tax included in price — margin scheme">incl.</span>
+        ) : (
+            fmt(amount)
+        );
 
     return (
         <>
@@ -132,8 +163,8 @@ export default function SalePrint({ invoice, store }: Props) {
                         {store.gstin && <p className="mt-0.5 text-xs font-semibold">GSTIN: {store.gstin}</p>}
                     </div>
 
-                    <div className="border-b border-black py-1 text-center text-sm font-bold tracking-widest">
-                        TAX INVOICE
+                    <div className="border-b border-black py-1 text-center text-sm font-bold tracking-widest uppercase">
+                        {invoice.document_label}
                     </div>
 
                     {/* Meta + party */}
@@ -162,13 +193,13 @@ export default function SalePrint({ invoice, store }: Props) {
                                 <th className="border-r border-black px-1.5 py-1.5 text-right w-12">Qty</th>
                                 <th className="border-r border-black px-1.5 py-1.5 text-right w-20">Rate</th>
                                 <th className="border-r border-black px-1.5 py-1.5 text-right w-20">Taxable</th>
-                                {invoice.is_gst_billed && intra && (
+                                {showTaxCols && intra && (
                                     <>
                                         <th className="border-r border-black px-1.5 py-1.5 text-right w-20">CGST</th>
                                         <th className="border-r border-black px-1.5 py-1.5 text-right w-20">SGST</th>
                                     </>
                                 )}
-                                {invoice.is_gst_billed && !intra && (
+                                {showTaxCols && !intra && (
                                     <th className="border-r border-black px-1.5 py-1.5 text-right w-20">IGST</th>
                                 )}
                                 <th className="px-1.5 py-1.5 text-right w-24">Total</th>
@@ -184,25 +215,69 @@ export default function SalePrint({ invoice, store }: Props) {
                                             <p className="font-mono text-[11px] text-neutral-600">IMEI: {it.imeis.join(", ")}</p>
                                         )}
                                         {it.is_margin_scheme && <p className="text-[11px] italic text-neutral-600">Margin scheme</p>}
+                                        {it.warranty && <p className="text-[11px] text-neutral-600">Warranty: {it.warranty}</p>}
                                     </td>
                                     <td className="border-r border-neutral-300 px-1.5 py-1.5">{it.hsn_code ?? "—"}</td>
                                     <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{it.qty}</td>
                                     <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(it.unit_price)}</td>
                                     <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(it.taxable_value)}</td>
-                                    {invoice.is_gst_billed && intra && (
+                                    {showTaxCols && intra && (
                                         <>
-                                            <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(it.cgst_amount)}</td>
-                                            <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(it.sgst_amount)}</td>
+                                            <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{taxCell(it, it.cgst_amount)}</td>
+                                            <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{taxCell(it, it.sgst_amount)}</td>
                                         </>
                                     )}
-                                    {invoice.is_gst_billed && !intra && (
-                                        <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(it.igst_amount)}</td>
+                                    {showTaxCols && !intra && (
+                                        <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{taxCell(it, it.igst_amount)}</td>
                                     )}
                                     <td className="px-1.5 py-1.5 text-right font-medium">{fmt(it.line_total)}</td>
                                 </tr>
                             ))}
                         </tbody>
                     </table>
+
+                    {/* HSN-wise summary — S2/S4/S5 (mandatory for B2B), optional S3, never S1.
+                        Tax columns are omitted on margin invoices (hide_tax). */}
+                    {invoice.show_hsn_summary && invoice.hsn_summary.length > 0 && (
+                        <table className="w-full border-b border-black text-xs">
+                            <thead>
+                                <tr className="border-b border-black bg-neutral-100 print:bg-neutral-100">
+                                    <th className="border-r border-black px-1.5 py-1.5 text-left">HSN</th>
+                                    <th className="border-r border-black px-1.5 py-1.5 text-right w-16">Qty</th>
+                                    <th className="border-r border-black px-1.5 py-1.5 text-right w-24">Taxable Value</th>
+                                    {!invoice.hide_tax && intra && (
+                                        <>
+                                            <th className="border-r border-black px-1.5 py-1.5 text-right w-20">CGST</th>
+                                            <th className="border-r border-black px-1.5 py-1.5 text-right w-20">SGST</th>
+                                        </>
+                                    )}
+                                    {!invoice.hide_tax && !intra && (
+                                        <th className="border-r border-black px-1.5 py-1.5 text-right w-20">IGST</th>
+                                    )}
+                                    <th className="px-1.5 py-1.5 text-right w-24">Total Value</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {invoice.hsn_summary.map((h, i) => (
+                                    <tr key={i} className="border-b border-neutral-300">
+                                        <td className="border-r border-neutral-300 px-1.5 py-1.5">{h.hsn_code}</td>
+                                        <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{h.qty}</td>
+                                        <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(h.taxable_value)}</td>
+                                        {!invoice.hide_tax && intra && (
+                                            <>
+                                                <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(h.tax_amount / 2)}</td>
+                                                <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(h.tax_amount / 2)}</td>
+                                            </>
+                                        )}
+                                        {!invoice.hide_tax && !intra && (
+                                            <td className="border-r border-neutral-300 px-1.5 py-1.5 text-right">{fmt(h.tax_amount)}</td>
+                                        )}
+                                        <td className="px-1.5 py-1.5 text-right font-medium">{fmt(h.line_total)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
 
                     {/* Totals */}
                     <div className="grid grid-cols-2 text-xs">
@@ -224,13 +299,13 @@ export default function SalePrint({ invoice, store }: Props) {
                             {invoice.shipping_charge > 0 && (
                                 <div className="flex justify-between py-0.5"><span>Shipping</span><span>+ {fmt(invoice.shipping_charge)}</span></div>
                             )}
-                            {invoice.is_gst_billed && intra && (
+                            {showTaxCols && intra && (
                                 <>
                                     <div className="flex justify-between py-0.5"><span>CGST</span><span>{fmt(cgstTotal)}</span></div>
                                     <div className="flex justify-between py-0.5"><span>SGST</span><span>{fmt(sgstTotal)}</span></div>
                                 </>
                             )}
-                            {invoice.is_gst_billed && !intra && (
+                            {showTaxCols && !intra && (
                                 <div className="flex justify-between py-0.5"><span>IGST</span><span>{fmt(igstTotal)}</span></div>
                             )}
                             {!invoice.is_gst_billed && (

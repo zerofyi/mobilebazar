@@ -24,6 +24,7 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 final class PurchaseService
 {
@@ -83,8 +84,28 @@ final class PurchaseService
             if ($existing = $this->findByIdempotencyKey($store->id, $key)) {
                 return $existing;
             }
+            // A concurrent purchase won the race on an active IMEI/serial
+            // (uniq_active_imei1/2/serial). That is a 422, never a 500.
+            if ($this->isActiveIdentifierViolation($e)) {
+                throw ValidationException::withMessages([
+                    'lines' => 'A device with this IMEI or serial number is already in active stock. It may have been purchased concurrently — please review and retry.',
+                ]);
+            }
             throw $e;
         }
+    }
+
+    /**
+     * True when the unique violation came from the active-only identifier
+     * indexes on stock_units (a device already in available/reserved stock).
+     */
+    private function isActiveIdentifierViolation(UniqueConstraintViolationException $e): bool
+    {
+        $message = $e->getMessage();
+
+        return str_contains($message, 'uniq_active_imei1')
+            || str_contains($message, 'uniq_active_imei2')
+            || str_contains($message, 'uniq_active_serial');
     }
 
     private function createPurchase(Store $store, User $user, array $data): PurchaseOrder
@@ -298,11 +319,17 @@ final class PurchaseService
             'purchase_order_item_id' => $item->id,
             'received_qty'           => $qty,
             'remaining_qty'          => $qty,
-            'unit_cost'              => $this->r2($lineData['unit_cost'] ?? 0),
             'base_cost'              => $this->r2($lineData['base_cost']),
             'landed_cost'            => $this->r2($lineData['landed_cost']),
-            'tax_type'               => $lineData['tax_type'],
             'is_margin_scheme'       => (bool) $lineData['is_margin_scheme'],
+            // Batch carries the line's condition + price overrides (columns exist
+            // on stock_batches; previously computed client-side then dropped).
+            'product_condition'      => strtolower(trim((string) ($lineData['condition_code'] ?? 'new'))),
+            'overall_health'         => $this->blankToNull($lineData['overall_health'] ?? null),
+            // Duration-style warranty only ('D' mode), mirroring stock_units.
+            'remaining_warranty'     => $this->blankToNull($lineData['remaining_warranty'] ?? null),
+            'wholesale_price'        => $this->positiveOrNull($lineData['wholesale_price'] ?? null),
+            'selling_price'          => $this->positiveOrNull($lineData['selling_price'] ?? null),
         ]);
 
         if (! $variantId) {

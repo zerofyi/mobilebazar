@@ -101,11 +101,16 @@ class StoreSaleRequest extends FormRequest
             'lines'                          => ['required', 'array', 'min:1'],
             'lines.*.product_variant_id'     => ['nullable', 'integer', 'exists:product_variants,id'],
             'lines.*.manual_item_name'       => ['nullable', 'string', 'max:200'],
+            'lines.*.warranty'               => ['nullable', 'string', 'max:100'],
             'lines.*.manual_hsn'             => ['nullable', 'string', 'max:20'],
             'lines.*.is_serialized'          => ['required', 'boolean'],
             'lines.*.qty'                    => ['required', 'integer', 'min:1'],
             'lines.*.stock_unit_ids'         => ['nullable', 'array'],
             'lines.*.stock_unit_ids.*'       => ['integer', 'min:1'],
+            // Bulk lines: the cashier's chosen batch (POS batch picker).
+            // The service allocates from it first, then continues FIFO.
+            // A foreign/empty/QC-held id is rejected with 422 by the service.
+            'lines.*.preferred_batch_id'    => ['nullable', 'integer', 'exists:stock_batches,id'],
             'lines.*.unit_price'             => ['required', 'numeric', 'min:0'],
             'lines.*.discount_amount'        => ['required', 'numeric', 'min:0'],
             'lines.*.tax_type'               => ['required', Rule::in(['inclusive', 'exclusive'])],

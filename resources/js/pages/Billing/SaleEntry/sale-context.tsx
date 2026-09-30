@@ -7,15 +7,20 @@ import React, { createContext, useContext, useMemo, useReducer } from "react";
  * BOTH live preview and the submit payload, so they cannot disagree. It mirrors
  * the backend SaleGstEvaluationService exactly:
  *
+ *   GST is ALWAYS inclusive when it applies — the price the buyer pays
+ *   already contains the tax.
+ *
  *   per unit: discPerUnit = line.discount_amount / line.qty; net = unit_price - discPerUnit
  *   - !is_gst_billed || tax_pct <= 0          → tax = 0, taxable = net, total = net
  *   - margin scheme                           → m = max(0, net - landed_cost);
  *                                               tax = m*r/(100+r); taxable = net - tax; total = net
- *   - tax_type = 'exclusive'                  → taxable = net; tax = net*r/100; total = net + tax
- *   - tax_type = 'inclusive' (default)        → tax = net*r/(100+r); taxable = net - tax; total = net
+ *   - otherwise (inclusive)                   → tax = net*r/(100+r); taxable = net - tax; total = net
  *
  *   header: subtotal = Σtaxable; tax_amount = Σtax;
  *           grand_total = subtotal + tax_amount - billDiscount + shippingCharge + roundOff
+ *
+ * S1–S5 document classification lives in deriveDocument() and is mirrored by
+ * SaleGstEvaluationService::documentType() — keep the two in sync.
  *
  * Sale mode (retail | wholesale) switches the price source:
  *   retail    → serialized: stock_units.selling_price · bulk: variants.selling_price
@@ -39,23 +44,53 @@ export interface StoreInfo {
 
 export interface CategoryOption { id: number; name: string; }
 
+export type SearchMode = "serialized" | "bulk" | "all";
+
+/** One serialized unit row from GET /app/sales/stock/search (mode=serialized). */
 export interface StockUnitMeta {
-    id: number; imei1: string | null; imei2: string | null; serial_number: string | null;
+    id: number; variant_id: number | null; name: string;
+    imei1: string | null; imei2: string | null; serial_number: string | null;
     device_condition: string; overall_health: string | null;
     landed_cost: number; is_margin_scheme: boolean;
-    selling_price: number | null; wholesale_price: number | null;
+    /** Unit's own retail price (nullable). */
+    selling_price: number | null;
+    /** Unit's own wholesale price (nullable). */
+    wholesale_price: number | null;
+    /** Variant selling price — fallback when the unit has no own price. */
+    variant_price: number;
+    tax_pct: number;
+    /** Customer-facing warranty default (the unit's remaining warranty). */
+    warranty: string | null;
 }
 
-/** One row from GET /app/sales/stock/search (also the shape of initialProducts, minus units). */
-export interface StockSearchResult {
+/** One saleable batch inside a bulk search result. FIFO = first in the list. */
+export interface SearchBatch {
+    id: number; batch_number: string; remaining_qty: number;
+    product_condition: string; overall_health: string | null;
+    remaining_warranty: string | null;
+    /** Batch retail-price override (nullable). */
+    selling_price: number | null;
+    /** Batch wholesale-price override (nullable). */
+    wholesale_price: number | null;
+    landed_cost: number; is_margin_scheme: boolean;
+}
+
+/** One non-serialized variant from GET /app/sales/stock/search (mode=bulk). */
+export interface BulkSearchResult {
     variant_id: number; product_name: string; variant_name: string;
     sku: string; barcode: string | null; hsn_code: string | null;
-    is_serialized: boolean; mrp: number; selling_price: number;
-    min_selling_price: number; tax_pct: number; tax_type: "inclusive";
+    tax_pct: number; selling_price: number; min_selling_price: number;
     available_qty: number; img: string | null;
-    landed_cost_preview: number; is_margin_scheme_preview: boolean;
-    exact_unit?: StockUnitMeta | null;
-    units?: StockUnitMeta[];
+    batches: SearchBatch[];
+}
+
+export interface UnitSearchResponse { exact: boolean; units: StockUnitMeta[]; }
+
+/** Shape of GET /app/sales/stock/search. */
+export interface StockSearchResponse {
+    mode: SearchMode;
+    units?: UnitSearchResponse;
+    products?: BulkSearchResult[];
 }
 
 /** The sale counterparty — always a real master record (no walk-ins). */
@@ -86,6 +121,13 @@ export interface CartLine {
     /** Variant retail price at add time — the "back to retail" anchor. */
     retail_price: number;
     min_selling_price: number;
+    /** Customer-facing warranty for this line (unit/batch default, cashier-overridable). */
+    warranty: string | null;
+    /** Bulk lines: the cashier's chosen batch (POS batch picker). */
+    preferred_batch_id: number | null;
+    batch_label: string | null;
+    batch_retail_price: number | null;
+    batch_wholesale_price: number | null;
     /** Line-level discount total (₹), spread evenly across units. */
     discount_amount: number;
     tax_type: "inclusive" | "exclusive";
@@ -109,19 +151,19 @@ export function evalUnitFiscal(args: {
     net: number; taxPct: number; taxType: "inclusive" | "exclusive";
     isGstBilled: boolean; isMargin: boolean; landedCost: number;
 }): UnitFiscal {
-    const { net, taxPct: r, taxType, isGstBilled, isMargin, landedCost } = args;
+    // GST is ALWAYS inclusive when it applies: the price the buyer pays
+    // already contains the tax. (taxType is accepted for history but no
+    // longer changes the math — mirrors SaleGstEvaluationService.)
+    const { net, taxPct: r, isGstBilled, isMargin, landedCost } = args;
     const n = round2(net);
     if (!isGstBilled || r <= 0) {
         return { taxable: n, tax: 0, total: n, margin: false };
     }
     if (isMargin) {
+        // Rule 32(5): tax only on the positive margin, embedded in the price.
         const m = Math.max(0, n - landedCost);
         const tax = round2((m * r) / (100 + r));
         return { taxable: round2(n - tax), tax, total: n, margin: true };
-    }
-    if (taxType === "exclusive") {
-        const tax = round2((n * r) / 100);
-        return { taxable: n, tax, total: round2(n + tax), margin: false };
     }
     const tax = round2((n * r) / (100 + r));
     return { taxable: round2(n - tax), tax, total: n, margin: false };
@@ -189,27 +231,91 @@ export function evalLineFiscal(line: CartLine, isGstBilled: boolean, movement: T
     };
 }
 
+// ─── S1–S5 GST document classification ───────────────────────────────────────
+
+export type DocumentCode =
+    | "BILL_OF_SUPPLY"
+    | "B2C_TAX_INVOICE"
+    | "B2C_MARGIN_INVOICE"
+    | "B2B_TAX_INVOICE"
+    | "B2B_MARGIN_INVOICE";
+
+export interface DocumentInfo {
+    code: DocumentCode;
+    /** Printed document title. */
+    label: string;
+    buyerKind: "B2C" | "B2B";
+    /** Whether the buyer can claim input tax credit. */
+    itcEligible: boolean;
+    /** Whether the printed invoice carries an HSN summary. */
+    hsnSummary: boolean;
+    /** Margin invoices must NOT show the tax amount explicitly on the receipt. */
+    hideTax: boolean;
+}
+
+/**
+ * S1–S5 classification. B2B is decided by the buyer's GSTIN (suppliers carry
+ * one; customers have no GSTIN column, so a customer party is always B2C).
+ * hasMargin is true when ANY line is a margin-scheme line.
+ *
+ * Mirrors SaleGstEvaluationService::documentType() — keep the two in sync.
+ */
+export function deriveDocument(
+    isGstBilled: boolean,
+    partyGstin: string | null,
+    hasMargin: boolean
+): DocumentInfo {
+    if (!isGstBilled) {
+        // S1 — no GST charged: Bill of Supply, 0% tax.
+        return {
+            code: "BILL_OF_SUPPLY", label: "Bill of Supply",
+            buyerKind: "B2C", itcEligible: false, hsnSummary: false, hideTax: false,
+        };
+    }
+
+    const isB2B = !!partyGstin;
+
+    if (isB2B && hasMargin) {
+        // S5 — B2B margin scheme: tax on profit margin only, no ITC.
+        return {
+            code: "B2B_MARGIN_INVOICE", label: "B2B Margin Tax Invoice",
+            buyerKind: "B2B", itcEligible: false, hsnSummary: true, hideTax: true,
+        };
+    }
+    if (isB2B) {
+        // S4 — standard B2B: full-rate tax, HSN mandatory, 100% ITC.
+        return {
+            code: "B2B_TAX_INVOICE", label: "B2B Tax Invoice",
+            buyerKind: "B2B", itcEligible: true, hsnSummary: true, hideTax: false,
+        };
+    }
+    if (hasMargin) {
+        // S3 — B2C margin scheme (Rule 32(5)): tax on positive margin only,
+        // never shown explicitly on the customer receipt.
+        return {
+            code: "B2C_MARGIN_INVOICE", label: "B2C Retail Invoice (Margin Scheme)",
+            buyerKind: "B2C", itcEligible: false, hsnSummary: true, hideTax: true,
+        };
+    }
+    // S2 — standard B2C retail: full-rate inclusive tax on selling price.
+    return {
+        code: "B2C_TAX_INVOICE", label: "B2C Tax Invoice",
+        buyerKind: "B2C", itcEligible: false, hsnSummary: true, hideTax: false,
+    };
+}
+
 // ─── Wholesale / retail price sources ────────────────────────────────────────
 
-/** Bulk price for a variant under the given mode. */
-export function bulkPriceFor(v: StockSearchResult, mode: SaleMode): number {
-    return mode === "wholesale" ? v.min_selling_price : v.selling_price;
-}
-
 /** Serialized unit price under the given mode, with retail fallbacks. */
-export function unitPriceFor(u: StockUnitMeta, variantPrice: number, mode: SaleMode): number {
-    if (mode === "wholesale") return u.wholesale_price ?? u.selling_price ?? variantPrice;
-    return u.selling_price ?? variantPrice;
+export function unitPriceFor(u: StockUnitMeta, mode: SaleMode): number {
+    if (mode === "wholesale") return u.wholesale_price ?? u.selling_price ?? u.variant_price;
+    return u.selling_price ?? u.variant_price;
 }
 
-/** Mode-aware price shown in search results / quick picks. */
-export function displaySearchPrice(v: StockSearchResult, mode: SaleMode): number {
-    if (!v.is_serialized) return bulkPriceFor(v, mode);
-    if (mode === "wholesale") {
-        const first = (v.units ?? [])[0] ?? v.exact_unit;
-        return first ? unitPriceFor(first, v.selling_price, mode) : v.selling_price;
-    }
-    return v.selling_price;
+/** Bulk batch effective price under the given mode (override ?? variant price). */
+export function batchPriceFor(b: SearchBatch, p: BulkSearchResult, mode: SaleMode): number {
+    if (mode === "wholesale") return b.wholesale_price ?? p.min_selling_price;
+    return b.selling_price ?? p.selling_price;
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -229,6 +335,7 @@ interface SaleState {
     autoRoundOff: boolean;
     roundOffManual: number;
     paidAmount: number;
+    paidInFull: boolean; // checkbox: paid always tracks the grand total
     paymentMode: PaymentMode;
     notes: string;
 }
@@ -247,6 +354,8 @@ interface SaleContextValue {
     roundOff: number;
     grandTotal: number;
     dueAmount: number;
+    /** Effective paid amount: grand total when paidInFull is on, else the manual paidAmount. */
+    paidAmount: number;
 }
 
 const SaleContext = createContext<SaleContextValue | null>(null);
@@ -273,6 +382,7 @@ export function initialSaleState(store: StoreInfo, initialInvoiceNumber: string)
         autoRoundOff: true,
         roundOffManual: 0,
         paidAmount: 0,
+        paidInFull: false,
         paymentMode: "cash",
         notes: "",
     };
@@ -301,15 +411,17 @@ export function SaleProvider({ children, store, initialInvoiceNumber }: SaleProv
     const preRound = subtotal + taxAmount - Math.max(0, state.billDiscount) + Math.max(0, state.shippingCharge);
     const roundOff = state.autoRoundOff ? round2(Math.round(preRound) - preRound) : round2(state.roundOffManual);
     const grandTotal = round2(preRound + roundOff);
-    const dueAmount = round2(Math.max(0, grandTotal - Math.max(0, state.paidAmount)));
+    // "Paid in full" checkbox: paid always equals the current grand total.
+    const paidAmount = state.paidInFull ? grandTotal : round2(Math.max(0, state.paidAmount));
+    const dueAmount = round2(Math.max(0, grandTotal - paidAmount));
 
     const lineCount = state.lines.length;
     const totalQty = useMemo(() => state.lines.reduce((s, l) => s + l.qty, 0), [state.lines]);
     const marginLineCount = useMemo(() => computedLines.filter((l) => l._margin).length, [computedLines]);
 
     const value = useMemo(
-        () => ({ state, dispatch, store, computedLines, lineCount, totalQty, marginLineCount, subtotal, taxAmount, cgst, sgst, igst, roundOff, grandTotal, dueAmount }),
-        [state, store, computedLines, lineCount, totalQty, marginLineCount, subtotal, taxAmount, cgst, sgst, igst, roundOff, grandTotal, dueAmount]
+        () => ({ state, dispatch, store, computedLines, lineCount, totalQty, marginLineCount, subtotal, taxAmount, cgst, sgst, igst, roundOff, grandTotal, dueAmount, paidAmount }),
+        [state, store, computedLines, lineCount, totalQty, marginLineCount, subtotal, taxAmount, cgst, sgst, igst, roundOff, grandTotal, dueAmount, paidAmount]
     );
 
     return <SaleContext.Provider value={value}>{children}</SaleContext.Provider>;
@@ -323,33 +435,75 @@ function newId(): string {
         : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function displayName(v: StockSearchResult): string {
-    return `${v.product_name}${v.variant_name ? ` (${v.variant_name})` : ""}`.trim();
-}
-
-function makeLineFromVariant(v: StockSearchResult, mode: SaleMode): CartLine {
+/**
+ * One serialized unit = one cart row, always. A row's unit price is the
+ * EXACT per-unit mode price (never averaged across units), so the posted
+ * invoice keeps precise per-unit wholesale history.
+ */
+function makeLineFromUnit(u: StockUnitMeta, pool: StockUnitMeta[], mode: SaleMode): CartLine {
     return {
         key: newId(),
-        product_variant_id: v.variant_id,
+        product_variant_id: u.variant_id,
         manual_item_name: null,
-        product_name: displayName(v),
-        sku: v.sku,
-        hsn_code: v.hsn_code,
-        is_serialized: v.is_serialized,
-        qty: 0,
+        product_name: u.name,
+        sku: "",
+        hsn_code: null,
+        is_serialized: true,
+        qty: 1,
+        unit_ids: [u.id],
+        unit_metas: [u],
+        units_pool: pool.filter((x) => x.id !== u.id),
+        available_qty: 1,
+        unit_price: unitPriceFor(u, mode),
+        retail_price: u.selling_price ?? u.variant_price,
+        min_selling_price: 0,
+        warranty: u.warranty,
+        preferred_batch_id: null,
+        batch_label: null,
+        batch_retail_price: null,
+        batch_wholesale_price: null,
+        discount_amount: 0,
+        tax_type: "inclusive",
+        tax_pct: u.tax_pct,
+        landed_cost_preview: u.landed_cost,
+        is_margin_scheme_preview: u.is_margin_scheme,
+        img: null,
+    };
+}
+
+/**
+ * One bulk line = one variant + the cashier's chosen batch. The batch's
+ * price override (if any) becomes the line price; the batch id travels to
+ * the backend so allocation starts there before continuing FIFO.
+ */
+function makeLineFromBulk(p: BulkSearchResult, b: SearchBatch, mode: SaleMode): CartLine {
+    return {
+        key: newId(),
+        product_variant_id: p.variant_id,
+        manual_item_name: null,
+        product_name: `${p.product_name}${p.variant_name ? ` (${p.variant_name})` : ""}`.trim(),
+        sku: p.sku,
+        hsn_code: p.hsn_code,
+        is_serialized: false,
+        qty: 1,
         unit_ids: [],
         unit_metas: [],
-        units_pool: v.units ?? [],
-        available_qty: v.available_qty,
-        unit_price: v.is_serialized ? v.selling_price : bulkPriceFor(v, mode),
-        retail_price: v.selling_price,
-        min_selling_price: v.min_selling_price,
+        units_pool: [],
+        available_qty: p.available_qty,
+        unit_price: batchPriceFor(b, p, mode),
+        retail_price: p.selling_price,
+        min_selling_price: p.min_selling_price,
+        warranty: b.remaining_warranty,
+        preferred_batch_id: b.id,
+        batch_label: `${b.batch_number} · ${b.product_condition}`,
+        batch_retail_price: b.selling_price,
+        batch_wholesale_price: b.wholesale_price,
         discount_amount: 0,
-        tax_type: v.tax_type ?? "inclusive",
-        tax_pct: v.tax_pct,
-        landed_cost_preview: v.landed_cost_preview,
-        is_margin_scheme_preview: v.is_margin_scheme_preview,
-        img: v.img,
+        tax_type: "inclusive",
+        tax_pct: p.tax_pct,
+        landed_cost_preview: b.landed_cost,
+        is_margin_scheme_preview: b.is_margin_scheme,
+        img: p.img,
     };
 }
 
@@ -358,23 +512,6 @@ function cartedUnitIds(lines: CartLine[]): Set<number> {
     const s = new Set<number>();
     for (const l of lines) for (const id of l.unit_ids) s.add(id);
     return s;
-}
-
-/**
- * One serialized unit = one cart row, always. A row's unit price is the
- * EXACT per-unit mode price (never averaged across units), so the posted
- * invoice keeps precise per-unit wholesale history.
- */
-function makeLineFromExactUnit(unit: StockUnitMeta, v: StockSearchResult, mode: SaleMode): CartLine {
-    const base = makeLineFromVariant(v, mode);
-    return {
-        ...base,
-        qty: 1,
-        unit_ids: [unit.id],
-        unit_metas: [unit],
-        units_pool: (v.units ?? []).filter((u) => u.id !== unit.id),
-        unit_price: unitPriceFor(unit, v.selling_price, mode),
-    };
 }
 
 /**
@@ -389,7 +526,8 @@ function cloneRowForUnit(line: CartLine, unit: StockUnitMeta, mode: SaleMode): C
         unit_ids: [unit.id],
         unit_metas: [unit],
         units_pool: line.units_pool.filter((u) => u.id !== unit.id),
-        unit_price: unitPriceFor(unit, line.retail_price, mode),
+        unit_price: unitPriceFor(unit, mode),
+        warranty: unit.warranty,
         discount_amount: 0,
     };
 }
@@ -452,8 +590,8 @@ function syncSerializedPools(lines: CartLine[]): CartLine[] {
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
 export type SaleAction =
-    | { type: "ADD_EXACT_UNIT"; payload: { unit: StockUnitMeta; variant: StockSearchResult } }
-    | { type: "ADD_VARIANT"; payload: { variant: StockSearchResult } }
+    | { type: "ADD_EXACT_UNIT"; payload: { unit: StockUnitMeta; pool: StockUnitMeta[] } }
+    | { type: "ADD_BULK_PRODUCT"; payload: { product: BulkSearchResult; batch: SearchBatch } }
     | { type: "INC_QTY"; payload: string }
     | { type: "DEC_QTY"; payload: string }
     | { type: "SET_QTY"; payload: { key: string; qty: number } }
@@ -469,6 +607,7 @@ export type SaleAction =
     | { type: "SET_SHIPPING_CHARGE"; payload: number }
     | { type: "SET_ROUND_OFF"; payload: { auto: boolean; manual: number } }
     | { type: "SET_PAID_AMOUNT"; payload: number }
+    | { type: "SET_PAID_IN_FULL"; payload: boolean }
     | { type: "SET_PAYMENT_MODE"; payload: PaymentMode }
     | { type: "SET_NOTES"; payload: string }
     | { type: "SET_INVOICE_DATE"; payload: string }
@@ -479,22 +618,19 @@ export type SaleAction =
 export function saleReducer(state: SaleState, action: SaleAction): SaleState {
     switch (action.type) {
         case "ADD_EXACT_UNIT": {
-            const { unit, variant } = action.payload;
+            const { unit, pool } = action.payload;
             if (cartedUnitIds(state.lines).has(unit.id)) return state;
             // One unit = one row — never merged, never price-averaged.
-            const lines = [...state.lines, makeLineFromExactUnit(unit, variant, state.saleMode)];
+            const lines = [...state.lines, makeLineFromUnit(unit, pool, state.saleMode)];
             return { ...state, lines: syncSerializedPools(lines) };
         }
-        case "ADD_VARIANT": {
-            const v = action.payload.variant;
-            const mode = state.saleMode;
-            if (v.is_serialized) {
-                const carted = cartedUnitIds(state.lines);
-                const next = (v.units ?? []).find((u) => !carted.has(u.id));
-                if (!next) return state; // no available units left — UI surfaces the message
-                return saleReducer(state, { type: "ADD_EXACT_UNIT", payload: { unit: next, variant: v } });
-            }
-            const idx = state.lines.findIndex((l) => l.product_variant_id === v.variant_id && !l.is_serialized);
+        case "ADD_BULK_PRODUCT": {
+            const { product, batch } = action.payload;
+            // Same variant + same chosen batch merges; a different batch is a
+            // separate line so its price/warranty stay distinct.
+            const idx = state.lines.findIndex(
+                (l) => !l.is_serialized && l.product_variant_id === product.variant_id && l.preferred_batch_id === batch.id
+            );
             if (idx >= 0) {
                 const line = state.lines[idx];
                 if (line.qty + 1 > line.available_qty) return state;
@@ -502,8 +638,8 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
                 lines[idx] = { ...line, qty: line.qty + 1 };
                 return { ...state, lines };
             }
-            if (v.available_qty < 1) return state;
-            return { ...state, lines: [...state.lines, { ...makeLineFromVariant(v, mode), qty: 1 }] };
+            if (product.available_qty < 1) return state;
+            return { ...state, lines: [...state.lines, makeLineFromBulk(product, batch, state.saleMode)] };
         }
         case "INC_QTY": {
             const idx = state.lines.findIndex((l) => l.key === action.payload);
@@ -602,6 +738,11 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
                 unit_price: price,
                 retail_price: price,
                 min_selling_price: 0,
+                warranty: null,
+                preferred_batch_id: null,
+                batch_label: null,
+                batch_retail_price: null,
+                batch_wholesale_price: null,
                 discount_amount: 0,
                 tax_type: "inclusive",
                 tax_pct: 0,
@@ -636,9 +777,16 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
                         // One unit per row: reprice to that unit's exact mode price.
                         const u = l.unit_metas[0];
                         if (!u) return l;
-                        return { ...l, unit_price: unitPriceFor(u, l.retail_price, mode) };
+                        return { ...l, unit_price: unitPriceFor(u, mode) };
                     }
-                    return { ...l, unit_price: mode === "wholesale" ? l.min_selling_price : l.retail_price };
+                    // Bulk: reprice to the chosen batch's override (if any),
+                    // else the variant's mode price.
+                    return {
+                        ...l,
+                        unit_price: mode === "wholesale"
+                            ? (l.batch_wholesale_price ?? l.min_selling_price)
+                            : (l.batch_retail_price ?? l.retail_price),
+                    };
                 }),
             };
         }
@@ -653,7 +801,9 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
         case "SET_ROUND_OFF":
             return { ...state, autoRoundOff: action.payload.auto, roundOffManual: action.payload.manual };
         case "SET_PAID_AMOUNT":
-            return { ...state, paidAmount: Math.max(0, action.payload) };
+            return { ...state, paidAmount: Math.max(0, action.payload), paidInFull: false };
+        case "SET_PAID_IN_FULL":
+            return { ...state, paidInFull: action.payload };
         case "SET_PAYMENT_MODE":
             return { ...state, paymentMode: action.payload };
         case "SET_NOTES":
@@ -662,14 +812,24 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
             return { ...state, invoiceDate: action.payload };
         case "HYDRATE": {
             const p = action.payload;
+            // Normalize lines parked by older builds (new fields default safely).
+            const lines = (p.lines ?? []).map((l: CartLine) => ({
+                ...l,
+                warranty: l.warranty ?? null,
+                preferred_batch_id: l.preferred_batch_id ?? null,
+                batch_label: l.batch_label ?? null,
+                batch_retail_price: l.batch_retail_price ?? null,
+                batch_wholesale_price: l.batch_wholesale_price ?? null,
+            }));
             return {
                 ...p,
                 store: state.store,
-                lines: p.lines ?? [],
+                lines,
                 party: p.party ?? null,
                 saleMode: p.saleMode === "wholesale" ? "wholesale" : "retail",
                 invoiceNumber: state.invoiceNumber,
                 idempotencyKey: p.idempotencyKey || generateUuid(),
+                paidInFull: p.paidInFull ?? false,
             };
         }
         case "CLEAR": {
@@ -691,6 +851,10 @@ export interface SubmitLine {
     is_serialized: boolean;
     qty: number;
     stock_unit_ids: number[];
+    /** Bulk lines: the cashier's chosen batch — allocation starts here, then FIFO. */
+    preferred_batch_id: number | null;
+    /** Customer-facing warranty for this line (unit/batch default, cashier-overridable). */
+    warranty: string | null;
     unit_price: number;
     discount_amount: number;
     tax_type: "inclusive" | "exclusive";
@@ -729,7 +893,7 @@ export function buildSalePayload(
     grandTotal: number,
     dueAmount: number
 ): SubmitPayload {
-    const paid = round2(Math.max(0, state.paidAmount));
+    const paid = state.paidInFull ? round2(grandTotal) : round2(Math.max(0, state.paidAmount));
     const paymentStatus: "paid" | "partial" | "unpaid" =
         dueAmount <= 0.009 ? "paid" : paid > 0 ? "partial" : "unpaid";
 
@@ -760,6 +924,8 @@ export function buildSalePayload(
             is_serialized: l.is_serialized,
             qty: l.qty,
             stock_unit_ids: l.is_serialized ? [...l.unit_ids] : [],
+            preferred_batch_id: l.is_serialized ? null : l.preferred_batch_id,
+            warranty: l.warranty?.trim() || null,
             unit_price: round2(l.unit_price),
             discount_amount: round2(l.discount_amount),
             tax_type: l.tax_type,

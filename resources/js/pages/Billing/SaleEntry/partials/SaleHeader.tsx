@@ -48,8 +48,6 @@ export default function SaleHeader({ onPark, onClear, isSubmitting }: Props) {
                                 <span className={cn("text-xs font-semibold", state.saleMode === "wholesale" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
                                     {state.saleMode === "wholesale" ? "Wholesale" : "Retail"}
                                 </span>
-                                <span className="text-xs text-muted-foreground/40">|</span>
-                                <span className="text-xs font-mono text-muted-foreground">{state.invoiceNumber}</span>
                             </div>
                         </div>
                     </div>

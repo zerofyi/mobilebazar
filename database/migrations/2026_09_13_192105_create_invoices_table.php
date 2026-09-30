@@ -60,8 +60,9 @@ return new class extends Migration
         });
 
         Schema::create('sale_number_sequences', function (Blueprint $table) {
-            $table->unsignedBigInteger('store_id')->primary();
-            $table->unsignedBigInteger('next_number')->default(1);
+            $table->id();
+            $table->foreignId('store_id')->unique()->constrained('stores')->cascadeOnDelete();
+            $table->unsignedBigInteger('next_number')->default(2);
             $table->timestamps();
         });
     }

@@ -154,7 +154,7 @@ class PurchaseEntryController extends Controller
             'items.productVariant:id,variant_name,sku',
             'items.stockUnits:id,purchase_order_item_id,imei1,imei2,serial_number,device_condition,overall_health,status,landed_cost,base_cost,is_margin_scheme,wholesale_price,selling_price',
             'items.stockUnits.deviceHealth:id,stock_unit_id,battery_health_pct',
-            'items.stockBatches:id,purchase_order_item_id,batch_number,received_qty,remaining_qty,unit_cost,landed_cost,is_margin_scheme',
+            'items.stockBatches:id,purchase_order_item_id,batch_number,received_qty,remaining_qty,landed_cost,is_margin_scheme',
         ])
             ->where('store_id', $store->id)
             ->where('uuid', $uuid)
@@ -354,7 +354,6 @@ class PurchaseEntryController extends Controller
                     'batch_number'  => $b->batch_number,
                     'received_qty'  => $b->received_qty,
                     'remaining_qty' => $b->remaining_qty,
-                    'unit_cost'     => (float) $b->unit_cost,
                     'landed_cost'   => (float) $b->landed_cost,
                 ])->values(),
             ])->values(),

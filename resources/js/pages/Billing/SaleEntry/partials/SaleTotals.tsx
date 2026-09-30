@@ -4,19 +4,10 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { useSale, inr, type PaymentMode } from "../sale-context";
-
-const PAYMENT_MODES = [
-    { value: "cash", label: "Cash" },
-    { value: "upi", label: "UPI" },
-    { value: "card", label: "Card" },
-    { value: "bank", label: "Bank" },
-    { value: "neft", label: "NEFT" },
-    { value: "cheque", label: "Cheque" },
-] as const;
+import { useSale, inr } from "../sale-context";
 
 interface Props {
     onSubmit: () => void;
@@ -28,17 +19,22 @@ interface Props {
 }
 
 /**
- * Bill totals + shipping + payment + notes + submit actions.
- * Shown below the cart table (or in the side column).
+ * Bill summary (right column, below the invoice meta card).
+ * Mirrors the invoices table money fields: subtotal, discount, shipping,
+ * tax, round-off, grand total, paid, due, payment status.
+ * Payment mode + notes live in InvoiceMeta.
  */
 export default function SaleTotals({ onSubmit, onPark, isSubmitting, errors, isValid, triedSubmit }: Props) {
     const {
-        state, dispatch, lineCount,
+        state, dispatch, lineCount, totalQty, paidAmount,
         subtotal, taxAmount, cgst, sgst, igst, roundOff, grandTotal, dueAmount,
     } = useSale();
     const [taxOpen, setTaxOpen] = useState(false);
 
     const showErrors = triedSubmit && !isValid;
+    const paid = Math.max(0, paidAmount);
+    const paymentStatus: "paid" | "partial" | "unpaid" =
+        dueAmount <= 0.009 ? "paid" : paid > 0 ? "partial" : "unpaid";
 
     return (
         <div className="flex flex-col gap-3">
@@ -89,6 +85,22 @@ export default function SaleTotals({ onSubmit, onPark, isSubmitting, errors, isV
                 <Separator className="my-3" />
 
                 <dl className="space-y-1 text-sm">
+                    <div className="flex justify-between text-muted-foreground">
+                        <dt>{lineCount} line{lineCount !== 1 ? "s" : ""} · {totalQty} item{totalQty !== 1 ? "s" : ""}</dt>
+                        <dd>
+                            <Badge
+                                variant="outline"
+                                className={cn(
+                                    "text-[10px] capitalize",
+                                    paymentStatus === "paid" && "text-emerald-700 dark:text-emerald-400",
+                                    paymentStatus === "partial" && "text-amber-700 dark:text-amber-400",
+                                    paymentStatus === "unpaid" && "text-muted-foreground"
+                                )}
+                            >
+                                {paymentStatus}
+                            </Badge>
+                        </dd>
+                    </div>
                     <div className="flex justify-between">
                         <dt className="text-muted-foreground">Subtotal</dt>
                         <dd className="tabular-nums">₹{inr(subtotal)}</dd>
@@ -141,44 +153,30 @@ export default function SaleTotals({ onSubmit, onPark, isSubmitting, errors, isV
                 <Separator className="my-3" />
 
                 <div className="flex items-center gap-2">
-                    <Label htmlFor="paid-amount" className="text-xs text-muted-foreground whitespace-nowrap">Paid ₹</Label>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        <Checkbox
+                            id="paid-in-full"
+                            checked={state.paidInFull}
+                            onCheckedChange={(c) => dispatch({ type: "SET_PAID_IN_FULL", payload: !!c })}
+                        />
+                        <Label htmlFor="paid-in-full" className="text-xs font-medium cursor-pointer whitespace-nowrap" title="Tick to collect the full bill amount now">
+                            Paid ₹
+                        </Label>
+                    </div>
                     <Input
                         id="paid-amount" type="number" min={0}
-                        value={state.paidAmount || ""}
+                        value={paidAmount || ""}
                         placeholder="0"
+                        disabled={state.paidInFull}
                         onChange={(e) => dispatch({ type: "SET_PAID_AMOUNT", payload: parseFloat(e.target.value) || 0 })}
                         onFocus={(e) => e.target.select()}
-                        className="h-8 text-right text-sm"
+                        className="h-8 text-right text-sm disabled:opacity-70"
+                        aria-label="Paid amount"
                     />
                     <span className={cn("text-sm font-semibold tabular-nums whitespace-nowrap", dueAmount > 0.009 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400")}>
                         Due ₹{inr(dueAmount)}
                     </span>
                 </div>
-                <div className="mt-2 grid grid-cols-6 gap-1" role="group" aria-label="Payment mode">
-                    {PAYMENT_MODES.map((m) => (
-                        <button
-                            key={m.value}
-                            type="button"
-                            onClick={() => dispatch({ type: "SET_PAYMENT_MODE", payload: m.value as PaymentMode })}
-                            className={cn(
-                                "rounded-md border px-1 py-1.5 text-[11px] font-medium",
-                                state.paymentMode === m.value
-                                    ? "border-primary bg-primary/10 text-primary"
-                                    : "border-border text-muted-foreground hover:text-foreground"
-                            )}
-                        >
-                            {m.label}
-                        </button>
-                    ))}
-                </div>
-
-                <Textarea
-                    value={state.notes}
-                    onChange={(e) => dispatch({ type: "SET_NOTES", payload: e.target.value })}
-                    placeholder="Notes (optional)"
-                    rows={1}
-                    className="mt-2 min-h-8 text-xs"
-                />
             </div>
 
             {showErrors && (

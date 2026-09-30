@@ -39,6 +39,7 @@ export interface ShowInvoiceItem {
     sku: string | null;
     hsn_code: string | null;
     is_serialized: boolean;
+    warranty: string | null;
     qty: number;
     unit_price: number;
     discount_amount: number;
@@ -214,6 +215,7 @@ export default function SaleShow({ invoice }: Props) {
                                                     {it.is_margin_scheme && <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400 text-[10px]">Margin</Badge>}
                                                 </p>
                                                 {it.sku && <p className="font-mono text-[11px] text-muted-foreground">{it.sku}{it.hsn_code ? ` · HSN ${it.hsn_code}` : ""}</p>}
+                                                {it.warranty && <p className="text-[11px] text-muted-foreground">Warranty: <span className="font-medium text-foreground">{it.warranty}</span></p>}
                                                 {it.units.length > 0 && (
                                                     <div className="mt-1 flex flex-wrap gap-1">
                                                         {it.units.map((u) => (

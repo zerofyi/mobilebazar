@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Requests\Billing;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class StorePurchaseRequest extends FormRequest
@@ -83,6 +84,12 @@ class StorePurchaseRequest extends FormRequest
             'lines.*.unit_cost'   => ['nullable', 'numeric',  'min:0'],
             'lines.*.wholesale_price' => ['nullable', 'numeric', 'min:0'],
             'lines.*.selling_price'   => ['nullable', 'numeric', 'min:0'],
+            // Bulk lines carry their condition so the batch keeps it (previously dropped).
+            'lines.*.condition_code'  => ['nullable', 'string', 'max:30', Rule::exists('device_conditions', 'code')],
+            'lines.*.overall_health'  => ['nullable', 'string', 'max:50'],
+            // Bulk batch warranty: duration-style only ('D' mode, e.g. '6 months'),
+            // mirroring stock_units.remaining_warranty.
+            'lines.*.remaining_warranty' => ['nullable', 'string', 'max:100'],
 
             // ── Units (serialized) ────────────────────────────────────────────
             'lines.*.units'                      => ['nullable', 'array'],
@@ -174,6 +181,42 @@ class StorePurchaseRequest extends FormRequest
                         }
                         $seen[$key] = true;
                     }
+                }
+            }
+
+            // ── Active-stock IMEI / serial conflicts ──────────────────────────
+            // stock_units enforces active-only uniqueness (uniq_active_imei1/2/
+            // uniq_active_serial). Catch conflicts here as 422 instead of letting
+            // the insert blow up with a 500. (The service still translates the
+            // concurrent-race case, where two purchases pass this check at once.)
+            $identifiers = ['imei1' => [], 'imei2' => [], 'serial_number' => []];
+            foreach ($lines as $line) {
+                if (empty($line['is_serialized'])) {
+                    continue;
+                }
+                foreach ($line['units'] ?? [] as $unit) {
+                    foreach (['imei1', 'imei2', 'serial_number'] as $field) {
+                        $val = trim($unit[$field] ?? '');
+                        if ($val !== '') {
+                            $identifiers[$field][] = $val;
+                        }
+                    }
+                }
+            }
+
+            $columnMap = ['imei1' => 'active_imei1', 'imei2' => 'active_imei2', 'serial_number' => 'active_serial'];
+            foreach ($identifiers as $field => $values) {
+                $values = array_values(array_unique($values));
+                if ($values === []) {
+                    continue;
+                }
+                $taken = DB::table('stock_units')
+                    ->whereIn($columnMap[$field], $values)
+                    ->whereIn('status', ['available', 'reserved'])
+                    ->pluck($columnMap[$field])
+                    ->all();
+                foreach ($taken as $dup) {
+                    $v->errors()->add('lines', "Identifier '{$dup}' ({$field}) is already in active stock.");
                 }
             }
         });

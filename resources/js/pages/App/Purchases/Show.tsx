@@ -41,7 +41,6 @@ interface StockBatch {
     batch_number: string;
     received_qty: number;
     remaining_qty: number;
-    unit_cost: number;
     landed_cost: number;
 }
 
@@ -457,7 +456,6 @@ export default function Show({ purchase }: Props) {
                                             <TableHead className="text-xs font-semibold">Batch Number</TableHead>
                                             <TableHead className="text-center text-xs font-semibold">Received Qty</TableHead>
                                             <TableHead className="text-center text-xs font-semibold">Remaining Qty</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Unit Cost</TableHead>
                                             <TableHead className="text-right text-xs font-semibold">Landed Cost</TableHead>
                                         </TableRow>
                                     </TableHeader>
@@ -468,7 +466,6 @@ export default function Show({ purchase }: Props) {
                                                 <TableCell className="text-xs font-bold text-primary">#{b.batch_number}</TableCell>
                                                 <TableCell className="text-center text-xs font-semibold">{b.received_qty}</TableCell>
                                                 <TableCell className="text-center text-xs font-semibold text-emerald-600">{b.remaining_qty}</TableCell>
-                                                <TableCell className="text-right text-xs">₹<FormatAmount amount={b.unit_cost} /></TableCell>
                                                 <TableCell className="text-right text-xs font-bold">₹<FormatAmount amount={b.landed_cost} /></TableCell>
                                             </TableRow>
                                         ))}
