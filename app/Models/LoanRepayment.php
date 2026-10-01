@@ -25,6 +25,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'collected_by',
     'shift_id',
     'paid_at',
+    'notes',
 ])]
 class LoanRepayment extends Model
 {
@@ -33,6 +34,12 @@ class LoanRepayment extends Model
     public function uniqueIds(): array
     {
         return ['uuid'];
+    }
+
+    /** Receipt URLs use the public uuid, never the sequential id. */
+    public function getRouteKeyName(): string
+    {
+        return 'uuid';
     }
 
     protected function casts(): array

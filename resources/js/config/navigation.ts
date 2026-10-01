@@ -1,4 +1,4 @@
-import { FolderTree, GalleryHorizontal, Handshake, Landmark, LayoutGrid, ListChecks, MonitorCog, Package, Settings, ShoppingCart, Sliders, Store, Tag, User, ListClock, ShoppingCartPlus, ShoppingCartMinus } from 'lucide-react';
+import { FolderTree, GalleryHorizontal, Handshake, Landmark, LayoutGrid, ListChecks, MonitorCog, Package, Settings, ShoppingCart, Sliders, Store, Tag, User, ListClock, ShoppingCartPlus, ShoppingCartMinus, FilePlus2, Wallet, CheckCircle2, AlertTriangle, CalendarCheck2, CalendarDays } from 'lucide-react';
 
 import type { NavItemGroup, RoleNavigation, UserRole } from '@/types';
 
@@ -125,6 +125,66 @@ export const COMMON_NAV: RoleNavigation = {
                     permission: 'customers.index',
                 },
 
+            ],
+        },
+        {
+            title: 'Loan Management',
+            targetRoles: ['zero', 'admin', 'store'],
+            items: [
+                {
+                    title: 'New Loan',
+                    href: app.loans.create.url(),
+                    icon: FilePlus2,
+                    permission: 'loans.create',
+                },
+                {
+                    title: 'Active Loans',
+                    href: app.loans.index.url({ query: { status: 'active' } }),
+                    icon: Wallet,
+                    permission: 'loans.view',
+                },
+                {
+                    title: 'Closed Loans',
+                    href: app.loans.index.url({ query: { status: 'closed' } }),
+                    icon: CheckCircle2,
+                    permission: 'loans.view',
+                },
+                {
+                    title: 'Defaulted Loans',
+                    href: app.loans.index.url({ query: { status: 'defaulted' } }),
+                    icon: AlertTriangle,
+                    permission: 'loans.view',
+                },
+            ],
+        },
+        {
+            title: 'EMI Management',
+            targetRoles: ['zero', 'admin', 'store'],
+            items: [
+                {
+                    title: 'Installments',
+                    href: app.installments.index.url(),
+                    icon: ListChecks,
+                    permission: 'installments.view',
+                },
+                {
+                    title: "Today's Collections",
+                    href: app.installments.today.url(),
+                    icon: CalendarCheck2,
+                    permission: 'installments.view',
+                },
+                {
+                    title: 'Calendar',
+                    href: app.installments.calendar.url(),
+                    icon: CalendarDays,
+                    permission: 'installments.view',
+                },
+                {
+                    title: 'Overdue',
+                    href: app.installments.overdue.url(),
+                    icon: AlertTriangle,
+                    permission: 'installments.view',
+                },
             ],
         },
     ],

@@ -4,6 +4,10 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * Loan repayments — consolidated for migrate:fresh (2026-09-30).
+ * Folded in: 2026_09_30_070500 (collector notes).
+ */
 return new class extends Migration
 {
     /**
@@ -27,6 +31,7 @@ return new class extends Migration
 
             $table->string('payment_mode', 30)->default('cash')->index();
             $table->string('txn_reference', 100)->nullable();
+            $table->text('notes')->nullable();
 
             $table->foreignId('collected_by')->nullable()->constrained('users')->nullOnDelete();
             $table->foreignId('shift_id')->nullable()->constrained('shifts')->nullOnDelete();
@@ -37,6 +42,13 @@ return new class extends Migration
             $table->index(['loan_id', 'paid_at'], 'idx_lr_loan_paid_at');
             $table->index(['collected_by', 'paid_at'], 'idx_lr_agent_paid_at');
         });
+
+        Schema::create('loan_receipt_sequences', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('store_id')->unique()->constrained('stores')->cascadeOnDelete();
+            $table->unsignedBigInteger('next_number')->default(1);
+            $table->timestamps();
+        });
     }
 
     /**
@@ -45,5 +57,6 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('loan_repayments');
+        Schema::dropIfExists('loan_receipt_sequences');
     }
 };

@@ -33,6 +33,12 @@ class LoanSchedule extends Model
         return ['uuid'];
     }
 
+    /** Installment URLs use the public uuid, never the sequential id. */
+    public function getRouteKeyName(): string
+    {
+        return 'uuid';
+    }
+
     protected function casts(): array
     {
         return [
@@ -55,5 +61,24 @@ class LoanSchedule extends Model
     public function repayments(): HasMany
     {
         return $this->hasMany(LoanRepayment::class);
+    }
+
+    /*
+    |----------------------------------------------------------------------
+    | Scopes
+    |----------------------------------------------------------------------
+    */
+
+    /** Past due date and not fully paid. */
+    public function scopeOverdue($q)
+    {
+        return $q->whereDate('due_date', '<', today())
+            ->where('status', '!=', 'paid');
+    }
+
+    /** Still collectible (not fully paid). */
+    public function scopeOutstanding($q)
+    {
+        return $q->where('status', '!=', 'paid');
     }
 }

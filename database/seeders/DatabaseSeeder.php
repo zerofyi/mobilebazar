@@ -21,11 +21,12 @@ class DatabaseSeeder extends Seeder
             DeviceConditionSeeder::class,
             ChannelSeeder::class,
             AccountSeeder::class,
+            LoanSettingsSeeder::class,
 
             RoleAndPermissionSeeder::class,
             UserSeeder::class,
 
-            CatalogSeeder::class,
+            //CatalogSeeder::class,
         ]);
     }
 }

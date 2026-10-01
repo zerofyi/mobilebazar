@@ -39,6 +39,7 @@ class AccountSeeder extends Seeder
             ['code' => '4016', 'name' => 'Sales Returns',              'type' => 'income'], // Contra-income (debit balance)
             ['code' => '4020', 'name' => 'Franchise Royalty Income',   'type' => 'income'],
             ['code' => '4030', 'name' => 'Loan Interest Income',       'type' => 'income'],
+            ['code' => '4035', 'name' => 'Processing Fee Income',      'type' => 'income'],
 
             // --- EXPENSES (5000 series) ---
             ['code' => '5010', 'name' => 'Cost of Goods Sold (COGS)',  'type' => 'expense'],

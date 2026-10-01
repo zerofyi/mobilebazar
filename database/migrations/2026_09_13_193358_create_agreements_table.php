@@ -4,6 +4,11 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * Agreements — consolidated for migrate:fresh (2026-09-30).
+ * Folded in: 2026_09_30_070600 (signed_document_path plain-path storage
+ * for the signed agreement scan; the asset-library columns are untouched).
+ */
 return new class extends Migration
 {
     /**
@@ -21,6 +26,7 @@ return new class extends Migration
 
             $table->longText('terms_and_conditions');
             $table->foreignId('signed_document_asset_id')->nullable()->constrained('assets')->nullOnDelete();
+            $table->string('signed_document_path', 255)->nullable();
             $table->foreignId('customer_signature_asset_id')->nullable()->constrained('assets')->nullOnDelete();
 
             $table->timestamp('signed_at')->nullable();

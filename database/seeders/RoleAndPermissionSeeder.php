@@ -16,6 +16,7 @@ class RoleAndPermissionSeeder extends Seeder
 
         // 2. Register all system permission strings
         $permissions = [
+            'dashboard.view',
             'stores.index', 'stores.view', 'stores.create', 'stores.update', 'stores.delete',
             'banners.manage',
             'brands.view', 'brands.manage', 'brands.delete',
@@ -30,6 +31,9 @@ class RoleAndPermissionSeeder extends Seeder
 
             'sales.index', 'sales.view', 'sales.create', 'sales.update', 'sales.delete', 'sales.purge',
 
+            'loans.index', 'loans.view', 'loans.create',
+            'installments.index', 'installments.view',
+
             'profile.manage.gst.status',
 
 
@@ -37,6 +41,7 @@ class RoleAndPermissionSeeder extends Seeder
         ];
 
         $storePermissions = [
+            'dashboard.view',
             'stores.view', 'stores.update',
 
             'suppliers.index', 'suppliers.view', 'suppliers.create', 'suppliers.update',
@@ -45,6 +50,9 @@ class RoleAndPermissionSeeder extends Seeder
 
             'purchases.index', 'purchases.view', 'purchases.create', 'purchases.update', 'purchases.delete',
             'sales.index', 'sales.view', 'sales.create', 'sales.update', 'sales.delete',
+
+            'loans.index', 'loans.view', 'loans.create',
+            'installments.index', 'installments.view',
 
             // Add new permissions here line-by-line during dev/production deployments
         ];

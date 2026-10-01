@@ -19,7 +19,7 @@ return new class extends Migration
 
             $table->string('document_type', 50)->index();
             $table->string('document_number', 100)->nullable()->index();
-            $table->foreignId('asset_id')->constrained('assets')->cascadeOnDelete();
+            $table->foreignId('asset_id')->nullable()->constrained('assets')->cascadeOnDelete();
 
             $table->boolean('is_verified')->default(false);
             $table->foreignId('verified_by')->nullable()->constrained('users')->nullOnDelete();

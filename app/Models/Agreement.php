@@ -19,6 +19,7 @@ use Zerofyi\Media\Traits\HasAssets;
     'template_name',
     'terms_and_conditions',
     'signed_document_asset_id',
+    'signed_document_path',
     'customer_signature_asset_id',
     'signed_at',
     'ip_address',

@@ -7,6 +7,8 @@ use App\Http\Controllers\BrandController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\FinancerController;
+use App\Http\Controllers\InstallmentController;
+use App\Http\Controllers\LoanController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseEntryController;
@@ -156,6 +158,36 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/{sale}/edit', [SaleEntryController::class, 'edit'])->name('edit');
         Route::put('/{sale}', [SaleEntryController::class, 'update'])->name('update');
         Route::delete('/{sale}', [SaleEntryController::class, 'destroy'])->name('destroy');
+    });
+
+    // ── Loans (posted loans are immutable: no edit/update/destroy) ──
+    Route::prefix('loans')->name('loans.')->group(function () {
+        // 1. Static routes (No parameters)
+        Route::get('/', [LoanController::class, 'index'])->name('index');
+        Route::get('/create', [LoanController::class, 'create'])->name('create');
+        Route::post('/preview-schedule', [LoanController::class, 'preview'])->name('preview-schedule');
+        Route::post('/', [LoanController::class, 'store'])->name('store');
+
+        // 2. Custom action routes on specific items (BEFORE show)
+        Route::post('/{loan}/settle', [LoanController::class, 'settle'])->name('settle');
+        Route::post('/{loan}/mark-default', [LoanController::class, 'markDefault'])->name('mark-default');
+        Route::post('/{loan}/agreement', [LoanController::class, 'agreement'])->name('agreement');
+        Route::post('/{loan}/upload-agreement', [LoanController::class, 'upload'])->name('agreement.upload');
+        Route::post('/{loan}/visits', [LoanController::class, 'logVisit'])->name('visits.store');
+        Route::post('/{loan}/kyc', [LoanController::class, 'uploadKyc'])->name('kyc.upload');
+
+        // 3. Detail
+        Route::get('/{loan}', [LoanController::class, 'show'])->name('show');
+    });
+
+    // ── Loan installments (EMI collection) ──
+    Route::prefix('loan-installments')->name('installments.')->group(function () {
+        Route::get('/', [InstallmentController::class, 'index'])->name('index');
+        Route::get('/today', [InstallmentController::class, 'today'])->name('today');
+        Route::get('/overdue', [InstallmentController::class, 'overdue'])->name('overdue');
+        Route::get('/calendar', [InstallmentController::class, 'calendar'])->name('calendar');
+        Route::post('/{schedule}/pay', [InstallmentController::class, 'pay'])->name('pay');
+        Route::get('/{repayment}/receipt', [InstallmentController::class, 'receipt'])->name('receipt');
     });
 
 });

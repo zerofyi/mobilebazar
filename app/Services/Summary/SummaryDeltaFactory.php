@@ -129,4 +129,82 @@ final class SummaryDeltaFactory
             'invoice_items_count'        => $items,
         ], $paidBuckets));
     }
+
+    /**
+     * Definitions:
+     *  - total_loan_given = amount financed into the loan book
+     *    (net_principal + processing_fee when spread). Cash collected as down
+     *    payment / upfront fee is NOT part of this — it lands in the
+     *    cash/upi/card/bank_collected buckets below.
+     *  - cash/upi/card/bank_collected = down_payment + upfront processing_fee
+     *    routed by down_payment_mode.
+     *  - loans_count = 1
+     */
+    public static function forLoanDisbursal(
+        int $storeId,
+        string $disbursedDate,
+        float $loanGiven,
+        float $cashCollected,
+        string $paymentMode,
+    ): SummaryDelta {
+        return new SummaryDelta($storeId, $disbursedDate, array_merge([
+            'total_loan_given' => $loanGiven,
+            'loans_count'      => 1,
+        ], self::collectionBuckets($paymentMode, $cashCollected)));
+    }
+
+    /**
+     * Definitions:
+     *  - total_emi_collected = full repayment amount (principal + interest).
+     *  - cash/upi/card/bank_collected = same amount, routed by payment_mode,
+     *    so the daily cash position stays correct.
+     *
+     * NOTE: no interest_earned bucket — interest belongs to the financer,
+     * not the business, so it never lands in business summaries.
+     */
+    public static function forLoanRepayment(
+        int $storeId,
+        string $paidDate,
+        string $paymentMode,
+        float $amount,
+    ): SummaryDelta {
+        return new SummaryDelta($storeId, $paidDate, array_merge([
+            'total_emi_collected' => $amount,
+        ], self::collectionBuckets($paymentMode, $amount)));
+    }
+
+    /**
+     * Down payment at disbursal: cash in, but NOT an EMI — it lands only in
+     * the cash/upi/card/bank_collected buckets, never total_emi_collected.
+     */
+    public static function forLoanDownPayment(
+        int $storeId,
+        string $disbursedDate,
+        string $paymentMode,
+        float $amount,
+    ): SummaryDelta {
+        return new SummaryDelta($storeId, $disbursedDate, self::collectionBuckets($paymentMode, $amount));
+    }
+
+    /** @return array<string, float> */
+    private static function collectionBuckets(string $paymentMode, float $amount): array
+    {
+        $buckets = [
+            'cash_collected' => 0.0,
+            'upi_collected'  => 0.0,
+            'card_collected' => 0.0,
+            'bank_collected' => 0.0,
+        ];
+
+        $bucketKey = match (strtolower($paymentMode)) {
+            'cash'                         => 'cash_collected',
+            'upi'                          => 'upi_collected',
+            'card', 'credit_card', 'debit_card' => 'card_collected',
+            default                        => 'bank_collected',
+        };
+
+        $buckets[$bucketKey] = $amount;
+
+        return $buckets;
+    }
 }

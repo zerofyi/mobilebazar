@@ -22,7 +22,7 @@
         "spatie/laravel-permission": "^8.3",
         "zerofyi/laracontext": "^1.0",
         "zerofyi/media": "^1.0",
-        "zerofyi/shipit": "^2.0"
+        "zerofyi/shipit": "*"
     },
     "require-dev": {
         "fakerphp/faker": "^1.24",

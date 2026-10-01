@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Controllers\DashboardController;
+
 Route::prefix('store')->middleware(['auth', 'verified', 'check:store'])
     ->name('store.')->group(function () {
-        Route::inertia('dashboard', 'dashboard')->name('dashboard');
+        Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
 });
