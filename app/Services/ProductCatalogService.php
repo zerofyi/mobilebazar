@@ -100,8 +100,10 @@ class ProductCatalogService
 
             // Only non-trashed variants are ever present in $data — trashed ones are
             // managed independently via destroy()/restore() and never resubmitted here.
-            $existingVariantIds = $product->variants()->pluck('id')->toArray();
-            $updatedVariantIds = [];
+            // NOTE: variants missing from the submission are deliberately NOT deleted.
+            // The Edit page may submit a subset (e.g. "Multiple Variants" toggle off),
+            // so absence from the payload must never be treated as intent to delete.
+            // Trashing happens only through the explicit destroy()/restore() actions.
             $isProductActive = $data['is_active'] ?? true;
 
             foreach ($data['variants'] as $variantData) {
@@ -127,26 +129,12 @@ class ProductCatalogService
                     ]
                 );
 
-                $updatedVariantIds[] = $variant->id;
-
                 if (isset($variantData['attributes'])) {
                     $attributeValueIds = array_column($variantData['attributes'], 'attribute_value_id');
                     $variant->attributeValues()->sync($attributeValueIds);
                 }
 
                 $this->reconcileVariantImages($product->id, $variant, $variantData, $userId);
-            }
-
-            // Any active variant not present in this submission was intentionally
-            // excluded (e.g. moved to trash mid-edit via a separate action) — this is
-            // a safety net, not the primary trash mechanism, which is destroy()/restore().
-            $toDelete = array_diff($existingVariantIds, $updatedVariantIds);
-            if (!empty($toDelete)) {
-                $variantsToDelete = ProductVariant::whereIn('id', $toDelete)->get();
-                foreach ($variantsToDelete as $v) {
-                    $v->images->each(fn ($img) => $img->deleteAsset($img->assets->first()));
-                    $v->delete();
-                }
             }
 
             return $product;
