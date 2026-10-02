@@ -254,7 +254,12 @@ export default function Edit({ product, categories, brands, taxCategories, units
         };
     };
 
-    const { data, setData, put, processing, errors, transform } = useForm({
+    const { data, setData, post, processing, errors, transform } = useForm({
+        // Method spoofing: Inertia v3 sends a REAL http PUT for put(), and PHP
+        // never populates $_POST for PUT + multipart bodies — every field
+        // arrives empty and validation fails on everything. So we POST with
+        // _method, like Customers/Edit and FinancerFormModal already do.
+        _method: 'PUT',
         name: product.name,
         short_description: product.short_description ?? '',
         description: product.description ?? '',
@@ -431,7 +436,7 @@ export default function Edit({ product, categories, brands, taxCategories, units
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        put(products.update.url(product.uuid), { forceFormData: true, preserveScroll: true });
+        post(products.update.url(product.uuid), { forceFormData: true, preserveScroll: true });
     };
 
     return (

@@ -53,6 +53,15 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import {
+    Pagination,
+    PaginationContent,
+    PaginationEllipsis,
+    PaginationItem,
+    PaginationLink,
+    PaginationNext,
+    PaginationPrevious,
+} from '@/components/ui/pagination';
+import {
     Dialog,
     DialogContent,
     DialogDescription,
@@ -100,6 +109,9 @@ interface IndexProps {
         current_page: number;
         last_page: number;
         total: number;
+        per_page: number;
+        from: number | null;
+        to: number | null;
     };
     stats: {
         total_products: number;
@@ -174,6 +186,30 @@ export default function Index({
 
     const handleResetFilters = () => {
         router.get(products.index.url(), {}, { preserveState: true, replace: true });
+    };
+
+    const goToPage = (page: number) => {
+        if (page < 1 || page > productList.last_page || page === productList.current_page) return;
+        router.get(
+            products.index.url(),
+            { ...filters, page: page === 1 ? undefined : page },
+            { preserveState: true, replace: true }
+        );
+    };
+
+    // Compact page-number list with ellipses: 1 … c-1 c c+1 … last
+    const pageItems = (): Array<number | 'ellipsis'> => {
+        const current = productList.current_page;
+        const last = productList.last_page;
+        if (last <= 7) return Array.from({ length: last }, (_, i) => i + 1);
+        const pages = new Set<number>([1, 2, last - 1, last, current - 1, current, current + 1]);
+        const sorted = [...pages].filter((p) => p >= 1 && p <= last).sort((a, b) => a - b);
+        const items: Array<number | 'ellipsis'> = [];
+        sorted.forEach((p, i) => {
+            if (i > 0 && p - sorted[i - 1] > 1) items.push('ellipsis');
+            items.push(p);
+        });
+        return items;
     };
 
     const openActionModal = (product: MasterProduct, action: 'delete' | 'purge' | 'restore') => {
@@ -557,6 +593,72 @@ export default function Index({
                         </Table>
                     </CardContent>
                 </Card>
+
+                {/* Pagination footer */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-1 pt-1">
+                    <p className="text-xs text-muted-foreground">
+                        Showing{' '}
+                        <span className="font-semibold text-foreground">
+                            {productList.from ?? 0}–{productList.to ?? 0}
+                        </span>{' '}
+                        of <span className="font-semibold text-foreground">{productList.total}</span> products
+                    </p>
+                    {productList.last_page > 1 && (
+                        <Pagination className="mx-0 w-auto">
+                            <PaginationContent>
+                                <PaginationItem>
+                                    <PaginationPrevious
+                                        href="#"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            goToPage(productList.current_page - 1);
+                                        }}
+                                        className={
+                                            productList.current_page === 1
+                                                ? 'pointer-events-none opacity-50'
+                                                : 'cursor-pointer'
+                                        }
+                                    />
+                                </PaginationItem>
+                                {pageItems().map((item, i) =>
+                                    item === 'ellipsis' ? (
+                                        <PaginationItem key={`ellipsis-${i}`}>
+                                            <PaginationEllipsis />
+                                        </PaginationItem>
+                                    ) : (
+                                        <PaginationItem key={item}>
+                                            <PaginationLink
+                                                href="#"
+                                                isActive={item === productList.current_page}
+                                                onClick={(e) => {
+                                                    e.preventDefault();
+                                                    goToPage(item);
+                                                }}
+                                                className="cursor-pointer"
+                                            >
+                                                {item}
+                                            </PaginationLink>
+                                        </PaginationItem>
+                                    )
+                                )}
+                                <PaginationItem>
+                                    <PaginationNext
+                                        href="#"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            goToPage(productList.current_page + 1);
+                                        }}
+                                        className={
+                                            productList.current_page === productList.last_page
+                                                ? 'pointer-events-none opacity-50'
+                                                : 'cursor-pointer'
+                                        }
+                                    />
+                                </PaginationItem>
+                            </PaginationContent>
+                        </Pagination>
+                    )}
+                </div>
             </div>
 
             {/* Selective Variant Action Modal */}
