@@ -243,7 +243,7 @@ export default function Edit({ product, categories, brands, taxCategories, units
             selling_price: '',
             cost_price: '',
             min_selling_price: '',
-            compare_price: '',
+            compare_price: '0',
             weight: '',
             stock_alert_qty: prefillSerializedAttrs ? '1' : '5',
             is_active: true,

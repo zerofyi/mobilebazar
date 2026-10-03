@@ -119,7 +119,7 @@ class ProductController extends Controller
         }
 
         $productsPaginated = $productQuery->orderBy('updated_at', 'desc')
-            ->paginate(15)
+            ->paginate(10)
             ->withQueryString();
 
         $productsPaginated->getCollection()->transform(function ($product) {
