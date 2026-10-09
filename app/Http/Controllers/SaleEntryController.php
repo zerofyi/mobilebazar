@@ -607,8 +607,11 @@ class SaleEntryController extends Controller
             $tax = (float) $item->tax_amount;
             $imei = $item->stockUnit?->imei1 ?? $item->stockUnit?->serial_number;
 
+            $productName = array_filter([$product?->name, $variant?->variant_name]);
+            $fullName = implode(' ', $productName);
+
             return [
-                'product_name'     => $variant?->variant_name ?? $item->manual_item_name ?? 'Item',
+                'product_name' => $fullName ?: ($item->manual_item_name ?? 'Item'),
                 'hsn_code'         => $variant?->hsn_code ?? $product?->hsn_code,
                 'qty'              => $item->quantity,
                 'unit_price'       => (float) $item->unit_price,
