@@ -316,9 +316,11 @@ export function Signature({ store, className = "" }: { store: PrintStore; classN
 }
 
 const DEFAULT_TERMS = [
-    "Goods once sold cannot be taken back or exchanged.",
-    "Warranty as per manufacturer terms; used/refurbished items carry only the warranty stated on this invoice.",
-    "Subject to local jurisdiction.",
+    "মোবাইল কেনার সাত দিন পর মোবাইল খারাপ হয়ে গেলে আমরা কোন ভাবে দায়ীবদ্ধ থাকবো না|",
+    "ওয়ারেন্টি থাকা ফোন সার্ভিস সেন্টার থেকে ওয়ারেন্টি নিতে হবে, আমরা সহযোগিতা করতে পারি মাত্র|",
+    "বিক্রিত মোবাইল ফোন ফেরত দিতে চাইলে দোকানদার দামদর করে ফেরত নেবে, সঙ্গে বিল বক্স আবশ্যিক|",
+    "নতুন ও পুরাতন মোবাইল কেনার সময় বিল বুঝিয়া নিন নচেৎ কোনরকম সমস্যা হলে দোকানদার দায়বদ্ধ থাকবে না|",
+    "মোবাইলের ডিসপ্লে সংক্রান্ত কোনো সমস্যা (যেমন গ্রিন লাইন, স্পট, ব্ল্যাক স্পট, লাইন, ডিসপ্লে ফ্লিকারিং বা অন্য কোনো ডিসপ্লে ত্রুটি) দেখা দিলে তার জন্য দোকানদার কোনোভাবেই দায়ী থাকবে না এবং এর দায়ভার দোকানদারের উপর বর্তাবে না|",
 ];
 
 export function Terms({ store, className = "" }: { store: PrintStore; className?: string }) {

@@ -1,3 +1,4 @@
+import AppLogoIcon from "../app-logo-icon";
 import type { TemplateProps } from "./model";
 import {
     AmountWords, BankBlock, EInvoiceBlock, HsnTable, ItemsTable, Logo, Notices, PartyDetails,
@@ -22,12 +23,19 @@ export default function Classic({ invoice, store, m }: TemplateProps) {
             <PrintStyles size="A4" margin="8mm" />
             <div className="mx-auto max-w-[210mm] border-2 border-black bg-white text-[12px] leading-snug text-black print:max-w-none">
                 {/* Title bar */}
-                <div className="flex items-center justify-between border-b-2 border-black px-4 py-2">
-                    <span className="w-44" aria-hidden />
-                    <h1 className="text-xl font-extrabold uppercase tracking-[0.25em]">{invoice.document_label}</h1>
-                    <span className="w-44 text-right text-[10px] font-semibold tracking-wider text-neutral-600">
-                        {m.copyLabel}
-                    </span>
+                <div className="flex items-center justify-between border-b-2 border-black p-4">
+                    <div className="flex items-center gap-3">
+                        <AppLogoIcon className="h-12 w-12 shrink-0 object-contain" />
+                        <h1 className="text-4xl font-extrabold uppercase tracking-[0.25em]">MOBILE BAZAR</h1>
+                    </div>
+                    <div className="end-section">
+                        <p className="text-sm font-semibold text-neutral-600">
+                            {invoice.document_label}
+                        </p>
+                        <span className="w-44 text-right text-[10px] font-semibold tracking-wider text-neutral-600">
+                            {m.copyLabel}
+                        </span>
+                    </div>
                 </div>
 
                 {/* Seller + meta */}
@@ -90,16 +98,14 @@ export default function Classic({ invoice, store, m }: TemplateProps) {
                     {m.hasBank && <BankBlock store={store} className="border-r border-black p-3" />}
                     <Signature store={store} className="p-3" />
                 </div>
+                <div className="p-3">
+                    <p className="font-extrabold">Terms and Conditions:</p>
+                    <Terms store={store} className="mt-1 text-[11px]" />
+                </div>
 
-                <div className="grid grid-cols-2">
-                    <div className="border-r border-black p-3">
-                        <p className="font-extrabold">Notes:</p>
-                        <p className="mt-1 whitespace-pre-wrap">{invoice.notes ?? "Thank you for the business."}</p>
-                    </div>
-                    <div className="p-3">
-                        <p className="font-extrabold">Terms and Conditions:</p>
-                        <Terms store={store} className="mt-1" />
-                    </div>
+                <div className="border-r border-black p-3">
+                    <p className="font-extrabold">Notes:</p>
+                    <p className="mt-1 whitespace-pre-wrap">{invoice.notes ?? "Thank you for the business."}</p>
                 </div>
             </div>
             <p className="mx-auto mt-2 max-w-[210mm] text-[11px] text-neutral-500">This is a computer-generated invoice.</p>
