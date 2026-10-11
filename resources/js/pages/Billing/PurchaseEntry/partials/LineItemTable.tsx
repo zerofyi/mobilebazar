@@ -27,8 +27,35 @@ function rowFromVariant(v: CatalogVariant, conditions: DeviceConditionOption[], 
     return { ...blankRow(conditions, storeIsGstRegistered), ...overrides, id: crypto.randomUUID(), product_variant_id: v.id, manual_item_name: "", name: `${v.product_name} (${v.variant_name})`, sku: v.sku, hsn_code: v.hsn_code ?? "", is_serialized: v.is_serialized, qty: v.is_serialized ? 1 : (overrides.qty ?? 1), cost: overrides.cost ?? v.cost_price, taxPercent: overrides.taxPercent ?? v.tax_pct, taxMode: overrides.taxMode ?? (storeIsGstRegistered ? "I" : "E"), wholesale: overrides.wholesale ?? v.cost_price, selling: overrides.selling ?? v.selling_price };
 }
 
-const WARRANTY_DURATIONS = ["out of warranty", "1 month", "3 months", "6 months", "1 year"];
-const QUALITIES = ["fair", "good", "super mint", "sealed pack"];
+const WARRANTY_DURATIONS = [
+  "out of warranty",
+  "store warranty",
+  "1 month",
+  "2 months",
+  "3 months",
+  "4 months",
+  "5 months",
+  "6 months",
+  "7 months",
+  "8 months",
+  "9 months",
+  "10 months",
+  "11 months",
+  "1 year",
+  "2 years",
+  "3 years",
+  "5 years",
+  "lifetime warranty"
+];
+const QUALITIES = [
+  "poor",
+  "fair",
+  "good",
+  "very good",
+  "mint",
+  "super mint",
+  "new",
+];
 
 const ProductCell = React.memo(function ProductCell({ row }: { row: CalculatedRow }) {
     const { dispatch } = usePurchase();
@@ -55,7 +82,7 @@ const ProductCell = React.memo(function ProductCell({ row }: { row: CalculatedRo
                 >
                     <PopoverTrigger asChild>
                         <Button variant="ghost" role="combobox" aria-expanded={open} className="w-full h-full justify-between px-1.5 text-xs font-normal rounded-none hover:bg-transparent border-none focus-visible:ring-1 focus-visible:ring-ring overflow-hidden">
-                            <span className="block w-full min-w-0 overflow-x-auto whitespace-nowrap text-left [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">{row.product_variant_id ? row.name : row.manual_item_name || "Search or enter name..."}</span>
+                            <span className="block w-full min-w-0 overflow-x-auto whitespace-nowrap text-left [&::-webkit-scrollbar]:hidden scrollbar-none">{row.product_variant_id ? row.name : row.manual_item_name || "Search or enter name..."}</span>
                             <ChevronsUpDown className="ml-0.5 h-3 w-3 shrink-0 opacity-50" />
                         </Button>
                     </PopoverTrigger>
@@ -83,7 +110,7 @@ const ProductCell = React.memo(function ProductCell({ row }: { row: CalculatedRo
                     </PopoverContent>
                 </Popover>
             </div>
-            <div className="w-10 shrink-0 border-l border-r h-full flex items-center" title="Battery Health (%)">
+            <div className="w-15 shrink-0 border-l border-r h-full flex items-center" title="Battery Health (%)">
                 <Input type="number" placeholder="BH" aria-label="Battery Health" disabled={!row.is_serialized} min="0" max="100" value={row.batteryHealth} onChange={(e) => update("batteryHealth", e.target.value)} className="h-full px-0.5 text-center border-none rounded-none text-xs shadow-none focus-visible:ring-1 focus-visible:ring-ring disabled:bg-muted/20" />
             </div>
         </div>
@@ -103,26 +130,343 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
     const costInvalid = !(row.cost > 0);
 
     return (
-        <TableRow className={cn("p-0 border-b transition-colors", row._isMarginLine ? "bg-amber-500/15 hover:bg-amber-500/25" : "hover:bg-muted/20")}>
+        <TableRow
+            className={cn(
+                "p-0 border-b transition-colors",
+                row._isMarginLine
+                    ? "bg-amber-500/15 hover:bg-amber-500/25"
+                    : "hover:bg-muted/20",
+            )}
+        >
             <TableCell className="p-0 text-center font-semibold text-muted-foreground border-r bg-muted/10 h-9">
-                <span className="inline-flex items-center gap-1">{index + 1}</span>
+                <span className="inline-flex items-center gap-1">
+                    {index + 1}
+                </span>
             </TableCell>
-            <TableCell className={cn("p-0 border-r h-9 w-[200px] max-w-[200px]", nameInvalid && "bg-destructive/5")}><ProductCell row={row} /></TableCell>
-            {cv.type && <TableCell className="p-0 border-r h-9"><Select value={row.condition} onValueChange={(v) => { const opt = deviceConditions.find((c) => c.code === v); update("condition", v); update("condition_id", opt?.id ?? null); }}><SelectTrigger className="w-full h-full border-none rounded-none shadow-none text-xs px-1 hover:bg-muted/10 focus:ring-1 bg-transparent"><SelectValue /></SelectTrigger><SelectContent>{deviceConditions.map((c) => <SelectItem key={c.id} value={c.code} className="text-xs">{c.label}</SelectItem>)}</SelectContent></Select></TableCell>}
-            {cv.quality && <TableCell className="p-0 border-r h-9"><Select value={row.quality} onValueChange={(v) => update("quality", v)}><SelectTrigger className="w-full h-full border-none rounded-none shadow-none text-xs px-1 hover:bg-muted/10 focus:ring-1 bg-transparent"><SelectValue /></SelectTrigger><SelectContent>{QUALITIES.map((q) => <SelectItem key={q} value={q} className="text-xs capitalize">{q}</SelectItem>)}</SelectContent></Select></TableCell>}
-            {cv.warranty && <TableCell className="p-0 border-r h-9"><div className="flex items-center h-full space-x-1 px-1 w-full min-w-0"><Button type="button" size="icon" onClick={cycleWarranty} className={cn("h-5 w-5 shrink-0 text-[10px] font-extrabold p-0 rounded-xs transition-colors", row.warrantyMode === "A" && "bg-primary text-primary-foreground", row.warrantyMode === "D" && "bg-secondary text-secondary-foreground border border-border/50", row.warrantyMode === "E" && "bg-destructive text-destructive-foreground shadow-2xs")}>{row.warrantyMode}</Button><div className="flex-1 min-w-0 h-full flex items-center">{row.warrantyMode === "D" ? <Select value={row.warrantyValue} onValueChange={(v) => update("warrantyValue", v)}><SelectTrigger className="w-full h-full border-none rounded-none shadow-none text-xs px-1 hover:bg-muted/10 bg-transparent"><SelectValue /></SelectTrigger><SelectContent>{WARRANTY_DURATIONS.map((d) => <SelectItem key={d} value={d} className="text-xs capitalize">{d}</SelectItem>)}</SelectContent></Select> : <Input type="date" value={row.warrantyValue} onChange={(e) => update("warrantyValue", e.target.value)} className="w-full h-full border-none rounded-none shadow-none text-xs px-0.5 bg-transparent" />}</div></div></TableCell>}
-            {cv.imeis && <><TableCell className="p-0 border-r h-9"><Input type="text" placeholder={row.is_serialized ? "IMEI 1" : "N/A"} disabled={!row.is_serialized} value={row.imei1} onChange={(e) => update("imei1", e.target.value)} className={cn("h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent", hasDupIdentifier && row.imei1 && "bg-destructive/10 text-destructive")} /></TableCell><TableCell className="p-0 border-r h-9"><Input type="text" placeholder={row.is_serialized ? "IMEI 2" : "N/A"} disabled={!row.is_serialized} value={row.imei2} onChange={(e) => update("imei2", e.target.value)} className={cn("h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent", hasDupIdentifier && row.imei2 && "bg-destructive/10 text-destructive")} /></TableCell></>}
-            {cv.serial && <TableCell className="p-0 border-r h-9"><Input type="text" placeholder={row.is_serialized ? "Serial No." : "N/A"} disabled={!row.is_serialized} value={row.serial} onChange={(e) => update("serial", e.target.value)} className={cn("h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent", hasDupIdentifier && row.serial && "bg-destructive/10 text-destructive")} /></TableCell>}
-            <TableCell className="p-0 border-r h-9"><Input type="number" min="1" disabled={row.is_serialized} value={row.qty} onChange={(e) => update("qty", Math.max(1, parseInt(e.target.value, 10) || 1))} className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 font-semibold disabled:bg-muted/30 bg-transparent" /></TableCell>
-            {cv.cost && <TableCell className={cn("p-0 border-r h-9", costInvalid && "bg-destructive/5")}><Input type="number" step="0.01" placeholder="0.00" value={row.cost || ""} onChange={(e) => update("cost", parseFloat(e.target.value) || 0)} className="h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent" /></TableCell>}
-            {cv.disc && <TableCell className="p-0 border-r h-9"><Input type="number" step="0.01" min="0" max="100" value={row.discPercent} onChange={(e) => update("discPercent", parseFloat(e.target.value) || 0)} className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 bg-transparent" /></TableCell>}
+            <TableCell
+                className={cn(
+                    "p-0 border-r h-9",
+                    nameInvalid && "bg-destructive/5",
+                )}
+            >
+                <ProductCell row={row} />
+            </TableCell>
+            {cv.type && (
+                <TableCell className="p-0 border-r h-9">
+                    <Select
+                        value={row.condition}
+                        onValueChange={(v) => {
+                            const opt = deviceConditions.find(
+                                (c) => c.code === v,
+                            );
+                            update("condition", v);
+                            update("condition_id", opt?.id ?? null);
+                        }}
+                    >
+                        <SelectTrigger className="w-full h-full border-none rounded-none shadow-none text-xs px-1 hover:bg-muted/10 focus:ring-1 bg-transparent">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {deviceConditions.map((c) => (
+                                <SelectItem
+                                    key={c.id}
+                                    value={c.code}
+                                    className="text-xs"
+                                >
+                                    {c.label}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </TableCell>
+            )}
+            {cv.quality && (
+                <TableCell className="p-0 border-r h-9">
+                    <Select
+                        value={row.quality}
+                        onValueChange={(v) => update("quality", v)}
+                    >
+                        <SelectTrigger className="w-full h-full border-none rounded-none shadow-none text-xs px-1 hover:bg-muted/10 focus:ring-1 bg-transparent">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {QUALITIES.map((q) => (
+                                <SelectItem
+                                    key={q}
+                                    value={q}
+                                    className="text-xs capitalize"
+                                >
+                                    {q}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </TableCell>
+            )}
+            {cv.warranty && (
+                <TableCell className="p-0 border-r h-9">
+                    <div className="flex items-center h-full space-x-1 px-1 w-full min-w-0">
+                        <Button
+                            type="button"
+                            size="icon"
+                            onClick={cycleWarranty}
+                            className={cn(
+                                "h-5 w-5 shrink-0 text-[10px] font-extrabold p-0 rounded-xs transition-colors",
+                                row.warrantyMode === "A" &&
+                                    "bg-primary text-primary-foreground",
+                                row.warrantyMode === "D" &&
+                                    "bg-secondary text-secondary-foreground border border-border/50",
+                                row.warrantyMode === "E" &&
+                                    "bg-destructive text-destructive-foreground shadow-2xs",
+                            )}
+                        >
+                            {row.warrantyMode}
+                        </Button>
+                        <div className="flex-1 min-w-0 h-full flex items-center">
+                            {row.warrantyMode === "D" ? (
+                                <Select
+                                    value={row.warrantyValue}
+                                    onValueChange={(v) =>
+                                        update("warrantyValue", v)
+                                    }
+                                >
+                                    <SelectTrigger className="w-full h-full border-none rounded-none shadow-none text-xs px-1 hover:bg-muted/10 bg-transparent">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {WARRANTY_DURATIONS.map((d) => (
+                                            <SelectItem
+                                                key={d}
+                                                value={d}
+                                                className="text-xs capitalize"
+                                            >
+                                                {d}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            ) : (
+                                <Input
+                                    type="date"
+                                    value={row.warrantyValue}
+                                    onChange={(e) =>
+                                        update("warrantyValue", e.target.value)
+                                    }
+                                    className="w-full h-full border-none rounded-none shadow-none text-xs px-0.5 bg-transparent"
+                                />
+                            )}
+                        </div>
+                    </div>
+                </TableCell>
+            )}
+            {cv.imeis && (
+                <>
+                    <TableCell className="p-0 border-r h-9">
+                        <Input
+                            type="text"
+                            placeholder={row.is_serialized ? "IMEI 1" : "N/A"}
+                            disabled={!row.is_serialized}
+                            value={row.imei1}
+                            onChange={(e) => update("imei1", e.target.value)}
+                            className={cn(
+                                "h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent",
+                                hasDupIdentifier &&
+                                    row.imei1 &&
+                                    "bg-destructive/10 text-destructive",
+                            )}
+                        />
+                    </TableCell>
+                    <TableCell className="p-0 border-r h-9">
+                        <Input
+                            type="text"
+                            placeholder={row.is_serialized ? "IMEI 2" : "N/A"}
+                            disabled={!row.is_serialized}
+                            value={row.imei2}
+                            onChange={(e) => update("imei2", e.target.value)}
+                            className={cn(
+                                "h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent",
+                                hasDupIdentifier &&
+                                    row.imei2 &&
+                                    "bg-destructive/10 text-destructive",
+                            )}
+                        />
+                    </TableCell>
+                </>
+            )}
+            {cv.serial && (
+                <TableCell className="p-0 border-r h-9">
+                    <Input
+                        type="text"
+                        placeholder={row.is_serialized ? "Serial No." : "N/A"}
+                        disabled={!row.is_serialized}
+                        value={row.serial}
+                        onChange={(e) => update("serial", e.target.value)}
+                        className={cn(
+                            "h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent",
+                            hasDupIdentifier &&
+                                row.serial &&
+                                "bg-destructive/10 text-destructive",
+                        )}
+                    />
+                </TableCell>
+            )}
+            <TableCell className="p-0 border-r h-9">
+                <Input
+                    type="number"
+                    min="1"
+                    disabled={row.is_serialized}
+                    value={row.qty}
+                    onChange={(e) =>
+                        update(
+                            "qty",
+                            Math.max(1, parseInt(e.target.value, 10) || 1),
+                        )
+                    }
+                    className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 font-semibold disabled:bg-muted/30 bg-transparent"
+                />
+            </TableCell>
+            {cv.cost && (
+                <TableCell
+                    className={cn(
+                        "p-0 border-r h-9",
+                        costInvalid && "bg-destructive/5",
+                    )}
+                >
+                    <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={row.cost || ""}
+                        onChange={(e) =>
+                            update("cost", parseFloat(e.target.value) || 0)
+                        }
+                        className="h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent"
+                    />
+                </TableCell>
+            )}
+            {cv.disc && (
+                <TableCell className="p-0 border-r h-9">
+                    <Input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        value={row.discPercent}
+                        onChange={(e) =>
+                            update(
+                                "discPercent",
+                                parseFloat(e.target.value) || 0,
+                            )
+                        }
+                        className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 bg-transparent"
+                    />
+                </TableCell>
+            )}
 
-            {cv.tax && <TableCell className="p-0 border-r h-9"><div className="flex items-center h-full space-x-0.5 px-0.5"><Button type="button" size="icon" onClick={cycleTaxMode} disabled={taxLocked} title={taxLocked ? "Margin scheme: tax 0% at purchase" : `Tax ${row.taxMode === "I" ? "Inclusive" : "Exclusive"}`} className={cn("h-5 w-5 shrink-0 text-[10px] font-bold p-0 rounded-xs disabled:opacity-40 transition-colors", row.taxMode === "I" ? "bg-secondary text-secondary-foreground border border-border/50" : "bg-primary text-primary-foreground")}>{row.taxMode}</Button><Input type="number" step="0.01" min="0" max="100" value={taxLocked ? 0 : row.taxPercent} disabled={taxLocked} onChange={(e) => update("taxPercent", parseFloat(e.target.value) || 0)} className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 disabled:bg-muted/20 bg-transparent" /></div></TableCell>}
+            {cv.tax && (
+                <TableCell className="p-0 border-r h-9">
+                    <div className="flex items-center h-full space-x-0.5 px-0.5">
+                        <Button
+                            type="button"
+                            size="icon"
+                            onClick={cycleTaxMode}
+                            disabled={taxLocked}
+                            title={
+                                taxLocked
+                                    ? "Margin scheme: tax 0% at purchase"
+                                    : `Tax ${row.taxMode === "I" ? "Inclusive" : "Exclusive"}`
+                            }
+                            className={cn(
+                                "h-5 w-5 shrink-0 text-[10px] font-bold p-0 rounded-xs disabled:opacity-40 transition-colors",
+                                row.taxMode === "I"
+                                    ? "bg-secondary text-secondary-foreground border border-border/50"
+                                    : "bg-primary text-primary-foreground",
+                            )}
+                        >
+                            {row.taxMode}
+                        </Button>
+                        <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            value={taxLocked ? 0 : row.taxPercent}
+                            disabled={taxLocked}
+                            onChange={(e) =>
+                                update(
+                                    "taxPercent",
+                                    parseFloat(e.target.value) || 0,
+                                )
+                            }
+                            className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 disabled:bg-muted/20 bg-transparent"
+                        />
+                    </div>
+                </TableCell>
+            )}
 
-            {cv.wholesale && <TableCell className="p-0 border-r h-9"><Input type="number" step="0.01" placeholder="0.00" value={row.wholesale || ""} onChange={(e) => update("wholesale", parseFloat(e.target.value) || 0)} className="h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent" /></TableCell>}
-            {cv.selling && <TableCell className="p-0 border-r h-9"><Input type="number" step="0.01" placeholder="0.00" value={row.selling || ""} onChange={(e) => update("selling", parseFloat(e.target.value) || 0)} className="h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent" /></TableCell>}
-            <TableCell className="p-0 border-r h-9 text-right pr-1 font-medium bg-muted/5 align-middle text-xs">₹{row._lineTotal.toFixed(2)}</TableCell>
-            <TableCell className="p-0 h-9 align-middle"><div className="flex items-center justify-center space-x-0.5 h-full"><Button type="button" variant="ghost" size="icon" disabled={!row.is_serialized} title={row.is_serialized ? "Duplicate row specs" : "Bulk rows use QTY instead of duplicate rows"} onClick={() => dispatch({ type: "DUPLICATE_ROW", payload: row.id })} className="h-6 w-6 text-muted-foreground hover:text-foreground p-0 disabled:opacity-30"><Copy className="w-3 h-3" /></Button><Button type="button" variant="ghost" size="icon" onClick={() => dispatch({ type: "REMOVE_ROW", payload: row.id })} className="h-6 w-6 text-destructive hover:bg-destructive/10 p-0"><Trash2 className="w-3 h-3" /></Button></div></TableCell>
+            {cv.wholesale && (
+                <TableCell className="p-0 border-r h-9">
+                    <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={row.wholesale || ""}
+                        onChange={(e) =>
+                            update("wholesale", parseFloat(e.target.value) || 0)
+                        }
+                        className="h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent"
+                    />
+                </TableCell>
+            )}
+            {cv.selling && (
+                <TableCell className="p-0 border-r h-9">
+                    <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={row.selling || ""}
+                        onChange={(e) =>
+                            update("selling", parseFloat(e.target.value) || 0)
+                        }
+                        className="h-full border-none rounded-none shadow-none text-xs px-1 bg-transparent"
+                    />
+                </TableCell>
+            )}
+            <TableCell className="p-0 border-r h-9 text-right pr-1 font-medium bg-muted/5 align-middle text-xs">
+                ₹{row._lineTotal.toFixed(2)}
+            </TableCell>
+            <TableCell className="p-0 h-9 align-middle">
+                <div className="flex items-center justify-center space-x-0.5 h-full">
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        disabled={!row.is_serialized}
+                        title={
+                            row.is_serialized
+                                ? "Duplicate row specs"
+                                : "Bulk rows use QTY instead of duplicate rows"
+                        }
+                        onClick={() =>
+                            dispatch({ type: "DUPLICATE_ROW", payload: row.id })
+                        }
+                        className="h-6 w-6 text-muted-foreground hover:text-foreground p-0 disabled:opacity-30"
+                    >
+                        <Copy className="w-3 h-3" />
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() =>
+                            dispatch({ type: "REMOVE_ROW", payload: row.id })
+                        }
+                        className="h-6 w-6 text-destructive hover:bg-destructive/10 p-0"
+                    >
+                        <Trash2 className="w-3 h-3" />
+                    </Button>
+                </div>
+            </TableCell>
         </TableRow>
     );
 });
@@ -448,71 +792,71 @@ export default function LineItemTable() {
                             <TableHead className="w-8 text-center p-1 border-r border-b font-bold text-foreground">
                                 #
                             </TableHead>
-                            <TableHead className="w-[200px] max-w-[200px] px-2 py-1 border-r border-b font-bold text-foreground">
+                            <TableHead className="min-w-60 max-w-75 px-2 py-1 border-r border-b font-bold text-foreground">
                                 PRODUCT & BH
                             </TableHead>
                             {cv.type && (
-                                <TableHead className="w-28 min-w-[110px] px-2 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-20 px-2 py-1 border-r border-b font-bold text-foreground">
                                     TYPE
                                 </TableHead>
                             )}
                             {cv.quality && (
-                                <TableHead className="w-28 min-w-[110px] px-2 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-20 px-2 py-1 border-r border-b font-bold text-foreground">
                                     QUALITY
                                 </TableHead>
                             )}
                             {cv.warranty && (
-                                <TableHead className="w-28 min-w-[120px] px-2 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-25 px-2 py-1 border-r border-b font-bold text-foreground">
                                     WARRANTY
                                 </TableHead>
                             )}
                             {cv.imeis && (
                                 <>
-                                    <TableHead className="min-w-[100px] px-2 py-1 border-r border-b font-bold text-foreground">
+                                    <TableHead className="min-w-35 px-2 py-1 border-r border-b font-bold text-foreground">
                                         IMEI 1
                                     </TableHead>
-                                    <TableHead className="min-w-[100px] px-2 py-1 border-r border-b font-bold text-foreground">
+                                    <TableHead className="min-w-35 px-2 py-1 border-r border-b font-bold text-foreground">
                                         IMEI 2
                                     </TableHead>
                                 </>
                             )}
                             {cv.serial && (
-                                <TableHead className="min-w-[90px] px-2 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="min-w-30 px-2 py-1 border-r border-b font-bold text-foreground">
                                     SERIAL
                                 </TableHead>
                             )}
-                            <TableHead className="w-10 p-1 border-r border-b font-bold text-foreground text-center">
+                            <TableHead className="w-15 p-1 border-r border-b font-bold text-foreground text-center">
                                 QTY
                             </TableHead>
                             {cv.cost && (
-                                <TableHead className="min-w-[70px] px-1.5 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-25 px-1.5 py-1 border-r border-b font-bold text-foreground">
                                     COST
                                 </TableHead>
                             )}
                             {cv.disc && (
-                                <TableHead className="w-11 p-1 border-r border-b font-bold text-foreground text-center">
-                                    DISC%
+                                <TableHead className="w-10 p-1 border-r border-b font-bold text-foreground text-center">
+                                    DISC %
                                 </TableHead>
                             )}
                             {cv.tax && (
-                                <TableHead className="min-w-[70px] px-1.5 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-20 px-1.5 py-1 border-r border-b font-bold text-foreground">
                                     TAX
                                 </TableHead>
                             )}
                             {cv.wholesale && (
-                                <TableHead className="min-w-[70px] px-1.5 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-25 px-1.5 py-1 border-r border-b font-bold text-foreground">
                                     WHOLESALE
                                 </TableHead>
                             )}
                             {cv.selling && (
-                                <TableHead className="min-w-[70px] px-1.5 py-1 border-r border-b font-bold text-foreground">
+                                <TableHead className="w-25 px-1.5 py-1 border-r border-b font-bold text-foreground">
                                     SELLING
                                 </TableHead>
                             )}
-                            <TableHead className="min-w-[80px] px-2 py-1 border-r border-b font-bold text-foreground text-right">
+                            <TableHead className="w-30 px-2 py-1 border-r border-b font-bold text-foreground text-right">
                                 TOTAL
                             </TableHead>
-                            <TableHead className="w-8 p-1 border-b font-bold text-foreground text-center">
+                            <TableHead className="w-10 p-1 border-b font-bold text-foreground text-center">
                                 *
                             </TableHead>
                         </TableRow>

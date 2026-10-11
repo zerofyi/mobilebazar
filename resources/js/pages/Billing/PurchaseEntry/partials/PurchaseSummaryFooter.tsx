@@ -18,10 +18,11 @@ interface Props {
     triedSubmit: boolean;
     errors: string[];
     isValid: boolean;
+    locked?: boolean;
 }
 const fmt = (n: number) => n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-export default function PurchaseSummaryFooter({ onSubmit, isSubmitting = false, triedSubmit, errors, isValid }: Props) {
+export default function PurchaseSummaryFooter({ onSubmit, isSubmitting = false, triedSubmit, errors, isValid, locked = false }: Props) {
     const { state, dispatch, subtotal, totalTax, grandTotal, roundOff, dueAmount, flags, vendorIsRegistered, marginLineCount, calculatedRows } = usePurchase();
     const [showTaxBreakdown, setShowTaxBreakdown] = useState(false);
 
@@ -147,8 +148,8 @@ export default function PurchaseSummaryFooter({ onSubmit, isSubmitting = false, 
                 <div className="flex items-center gap-2 text-xs text-muted-foreground"><Info className="size-4 shrink-0" /><span>Instant purchase: stock units/batches & journals post immediately on Save & Post.</span></div>
                 <div className="flex items-center gap-2 justify-end">
                     <Button type="button" variant="ghost" size="sm" disabled={isSubmitting} onClick={() => window.history.back()}>Cancel</Button>
-                    <Button type="button" variant="outline" size="sm" disabled={isSubmitting} onClick={() => onSubmit(true)}>{isSubmitting ? "Saving…" : "Save Draft"}</Button>
-                    <Button type="button" size="sm" disabled={isSubmitting} onClick={() => onSubmit(false)}>{isSubmitting ? "Posting…" : "Save & Post"}</Button>
+                    {!locked && <Button type="button" variant="outline" size="sm" disabled={isSubmitting} onClick={() => onSubmit(true)}>{isSubmitting ? "Saving…" : "Save Draft"}</Button>}
+                    <Button type="button" size="sm" disabled={isSubmitting} onClick={() => onSubmit(false)}>{isSubmitting ? (locked ? "Saving…" : "Posting…") : (locked ? "Save Revision" : "Save & Post")}</Button>
                 </div>
             </div>
         </div>

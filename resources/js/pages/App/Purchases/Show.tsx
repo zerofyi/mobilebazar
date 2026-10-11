@@ -1,25 +1,31 @@
-import React, { useState } from 'react';
-import { Head, Link } from '@inertiajs/react';
+import React, { useMemo, useState } from 'react';
+import { Head, Link, router } from '@inertiajs/react';
 import { dashboard } from '@/routes';
 import app from '@/routes/app';
 import { usePermissions } from '@/hooks/user-permissions';
 
 import {
-    ShoppingCart, ArrowLeft, Printer, Edit, Building2, UserRound,
-    Phone, Mail, MapPin, BadgeCheck, FileText, CheckCircle2, Clock,
-    AlertCircle, Download, User, CalendarClock, ShieldCheck,
-    Layers, Cpu, HardDrive, DollarSign, Receipt, FileSpreadsheet
+    ShoppingCart, ArrowLeft, Printer, Edit, Trash2, Building2, UserRound,
+    Phone, Mail, MapPin, BadgeCheck, FileText,
+    AlertCircle, Download, User, Clock, CalendarClock,
+    ChevronDown, ChevronRight, Receipt, Cpu, Boxes, Wallet,
+    History, StickyNote, Landmark,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Separator } from '@/components/ui/separator';
+import { Progress } from '@/components/ui/progress';
+import {
+    AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { FormatAmount } from '@/components/special/format-amount';
 import { cn } from '@/lib/utils';
 
-// ─── Interfaces ─────────────────────────────────────────────────────────
+// ─── Interfaces (mirror serializeForShow exactly) ────────────────────
 
 interface StockUnit {
     id: number;
@@ -63,6 +69,29 @@ interface PurchaseItem {
     batches: StockBatch[];
 }
 
+// Optional future fields — the backend does not serialize these yet.
+// Sections render a graceful empty state until they arrive.
+interface DebitNote {
+    id: number;
+    uuid: string;
+    debit_note_number: string;
+    note_date: string | null;
+    amount: number;
+    reason: string | null;
+    status: string | null;
+}
+
+interface PurchasePayment {
+    id: number;
+    uuid: string;
+    payment_number: string | null;
+    payment_date: string | null;
+    amount: number;
+    payment_mode: string | null;
+    reference_no: string | null;
+    status: string | null;
+}
+
 interface PurchaseDetail {
     id: number;
     uuid: string;
@@ -82,6 +111,7 @@ interface PurchaseDetail {
     tax_amount: number;
     discount_amount: number;
     shipping_charge: number;
+    round_off?: number | null;
     grand_total: number;
     paid_amount: number;
     due_amount: number;
@@ -90,6 +120,11 @@ interface PurchaseDetail {
     created_by: string | null;
     approved_by: string | null;
     approved_at: string | null;
+    revision: number;
+    revised_at: string | null;
+    revised_by: string | null;
+    revision_reason: string | null;
+    mutable: { mutable: boolean; reason: string | null };
     vendor: {
         id: number;
         name: string;
@@ -97,8 +132,10 @@ interface PurchaseDetail {
         gstin: string | null;
         phone: string | null;
         email: string | null;
-        address: string | { village_or_area?: string; district?: string; line1?: string } | null;
+        address: string | null;
     } | null;
+    debit_notes?: DebitNote[];
+    payments?: PurchasePayment[];
     items: PurchaseItem[];
 }
 
@@ -106,33 +143,109 @@ interface Props {
     purchase: PurchaseDetail;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────
 
 function fmtDate(iso: string | null) {
     if (!iso) return '—';
     return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-function renderAddress(address: PurchaseDetail['vendor'] extends null ? never : NonNullable<PurchaseDetail['vendor']>['address']) {
-    if (!address) return 'No primary address recorded.';
-    if (typeof address === 'string') return address;
-    return [address.line1 || address.village_or_area, address.district].filter(Boolean).join(', ');
+function statusBadge(status: string) {
+    const s = status.toLowerCase();
+    if (s === 'completed' || s === 'posted' || s === 'approved') {
+        return 'text-emerald-700 border-emerald-400/40 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400';
+    }
+    if (s === 'pending' || s === 'partial') {
+        return 'text-amber-700 border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400';
+    }
+    if (s === 'cancelled' || s === 'rejected') {
+        return 'text-destructive border-destructive/40 bg-destructive/5';
+    }
+    return 'text-muted-foreground border-border bg-muted/40';
+}
+
+function paymentStatusBadge(status: string) {
+    const s = status.toLowerCase().replace(/[\s_]+/g, '');
+    if (s === 'paid') {
+        return 'text-emerald-700 border-emerald-400/40 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400';
+    }
+    if (s === 'partial' || s === 'partiallypaid') {
+        return 'text-amber-700 border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400';
+    }
+    if (s === 'unpaid' || s === 'due' || s === 'overdue') {
+        return 'text-rose-700 border-rose-400/40 bg-rose-50 dark:bg-rose-950/30 dark:text-rose-400';
+    }
+    return 'text-muted-foreground border-border bg-muted/40';
+}
+
+function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
+    return (
+        <div className="flex items-start justify-between gap-3 py-1.5">
+            <dt className="text-xs text-muted-foreground shrink-0">{label}</dt>
+            <dd className="text-xs font-medium text-foreground text-right">{children}</dd>
+        </div>
+    );
+}
+
+function TotalRow({ label, amount, className, prefix = '₹' }: { label: string; amount: number; className?: string; prefix?: string }) {
+    return (
+        <div className={cn('flex items-center justify-between py-1 text-sm', className)}>
+            <span className="text-muted-foreground">{label}</span>
+            <span className="font-semibold tabular-nums text-foreground">{prefix}<FormatAmount amount={amount} /></span>
+        </div>
+    );
 }
 
 export default function Show({ purchase }: Props) {
     const { can } = usePermissions();
-    const isOverdue = purchase.due_date && purchase.due_amount > 0 && new Date(purchase.due_date) < new Date();
+    const [deleteOpen, setDeleteOpen] = useState(false);
+    const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-    const allUnits = purchase.items.flatMap((item) => item.units || []);
-    const allBatches = purchase.items.flatMap((item) => item.batches || []);
+    const isOverdue = purchase.due_date && purchase.due_amount > 0 && new Date(purchase.due_date) < new Date();
+    const paidPct = purchase.grand_total > 0
+        ? Math.min(100, Math.max(0, (purchase.paid_amount / purchase.grand_total) * 100))
+        : 0;
+
+    const toggleRow = (id: number) => {
+        setExpandedRows((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const handleDelete = () => {
+        router.delete(
+            app.purchases.destroy ? app.purchases.destroy.url(purchase.uuid) : `/purchases/${purchase.uuid}`,
+            { onFinish: () => setDeleteOpen(false) },
+        );
+    };
+
+    // GST rate-wise tax summary (Tally-style): taxable value per rate slab
+    const taxGroups = useMemo(() => {
+        const map = new Map<number, { taxable: number; tax: number }>();
+        for (const item of purchase.items) {
+            const g = map.get(item.tax_pct) ?? { taxable: 0, tax: 0 };
+            g.taxable += item.line_total - item.tax_amount;
+            g.tax += item.tax_amount;
+            map.set(item.tax_pct, g);
+        }
+        return [...map.entries()].sort((a, b) => a[0] - b[0]);
+    }, [purchase.items]);
+
+    const anyMarginScheme = purchase.items.some((i) => i.is_margin_scheme);
+    const debitNotes = purchase.debit_notes ?? [];
+    const payments = purchase.payments ?? [];
+    const roundOff = purchase.round_off ?? null;
 
     return (
         <>
-            <Head title={`Purchase Order ${purchase.po_number}`} />
+            <Head title={`Purchase ${purchase.po_number}`} />
 
-            <div className="flex h-full flex-1 flex-col gap-6 overflow-x-auto rounded-xl p-4 md:p-6">
+            <div className="flex h-full flex-1 flex-col gap-5 overflow-x-auto rounded-xl p-4 md:p-6">
 
-                {/* ── Top Header Actions & Ref ───────────────────────────── */}
+                {/* ── Action Bar ─────────────────────────────────────── */}
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between border-b border-border pb-4">
                     <div className="flex items-start gap-3">
                         <Button variant="outline" size="icon" className="size-9 shrink-0" asChild>
@@ -146,21 +259,22 @@ export default function Show({ purchase }: Props) {
                                     <ShoppingCart className="size-6 text-primary" />
                                     {purchase.po_number}
                                 </h1>
-                                <Badge variant="outline" className="uppercase text-xs font-semibold">
-                                    {purchase.bill_type === 'po' ? 'B2B Tax Invoice' : 'Self Purchase Voucher'}
+                                <Badge variant="outline" className="uppercase text-[11px] font-semibold">
+                                    {purchase.bill_type === 'po' ? 'Purchase Bill · B2B' : 'Purchase Voucher · Unregistered'}
                                 </Badge>
-                                <Badge
-                                    variant="outline"
-                                    className={cn("capitalize text-xs font-medium", {
-                                        'text-emerald-700 border-emerald-400/40 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400': purchase.status === 'completed',
-                                        'text-amber-700 border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400': purchase.status === 'pending',
-                                        'text-muted-foreground border-border bg-muted/40': purchase.status === 'draft',
-                                    })}
-                                >
+                                <Badge variant="outline" className={cn('capitalize text-[11px] font-medium', statusBadge(purchase.status))}>
                                     {purchase.status}
                                 </Badge>
+                                <Badge variant="outline" className={cn('capitalize text-[11px] font-medium', paymentStatusBadge(purchase.payment_status))}>
+                                    {purchase.payment_status}
+                                </Badge>
+                                {purchase.revision > 0 && (
+                                    <Badge variant="outline" className="text-[11px] font-medium text-muted-foreground">
+                                        Rev {purchase.revision}
+                                    </Badge>
+                                )}
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+                            <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-2 flex-wrap">
                                 <span>Order Date: <strong className="text-foreground">{fmtDate(purchase.order_date)}</strong></span>
                                 {purchase.vendor_invoice_no && (
                                     <>
@@ -168,20 +282,20 @@ export default function Show({ purchase }: Props) {
                                         <span>Supplier Bill Ref: <strong className="text-foreground">{purchase.vendor_invoice_no}</strong></span>
                                     </>
                                 )}
+                                <span>•</span>
+                                <span>{purchase.is_gst_billed ? 'GST Billed' : 'Non-GST Bill'}</span>
+                                <span>•</span>
+                                <span>{purchase.is_intra_state ? 'Intra-state (CGST + SGST)' : 'Inter-state (IGST)'}</span>
                             </p>
                         </div>
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">
-                        <Link
-                            href={app.purchases.print.url(purchase.uuid)} // Or `/app/purchases/${item.uuid}/print`
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center text-xs font-medium text-foreground hover:text-primary transition-colors cursor-pointer"
-                        >
-                            <Printer className="mr-2 size-4 text-muted-foreground" />
-                            <span>Print Voucher</span>
-                        </Link>
+                        <Button variant="outline" size="sm" asChild>
+                            <Link href={app.purchases.print.url(purchase.uuid)} target="_blank" rel="noopener noreferrer">
+                                <Printer className="mr-2 size-4 text-muted-foreground" /> Print
+                            </Link>
+                        </Button>
 
                         {purchase.invoice_document_path && (
                             <Button variant="outline" size="sm" asChild>
@@ -194,349 +308,580 @@ export default function Show({ purchase }: Props) {
                         {can('purchases.update') && (
                             <Button size="sm" asChild>
                                 <Link href={app.purchases.edit ? app.purchases.edit.url(purchase.uuid) : `/purchases/${purchase.uuid}/edit`}>
-                                    <Edit className="mr-2 size-4" /> Edit Order
+                                    <Edit className="mr-2 size-4" /> Edit
                                 </Link>
+                            </Button>
+                        )}
+
+                        {can('purchases.delete') && (
+                            <Button size="sm" variant="destructive" onClick={() => setDeleteOpen(true)}>
+                                <Trash2 className="mr-2 size-4" /> Delete
                             </Button>
                         )}
                     </div>
                 </div>
 
-                {/* ── Executive Metric Cards ─────────────────────────────── */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <Card>
-                        <CardHeader className="flex flex-row items-center justify-between pb-2">
-                            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                Payable Grand Total
-                            </CardTitle>
-                            <DollarSign className="size-4 text-muted-foreground" />
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-2xl font-bold text-foreground">
-                                ₹<FormatAmount amount={purchase.grand_total} />
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-1">
-                                Base: ₹<FormatAmount amount={purchase.subtotal} /> + Tax: ₹<FormatAmount amount={purchase.tax_amount} />
-                            </p>
-                        </CardContent>
-                    </Card>
+                {/* ── Bill Document ──────────────────────────────────── */}
+                <Card className="shadow-sm overflow-hidden">
+                    <CardContent className="p-0">
 
-                    <Card>
-                        <CardHeader className="flex flex-row items-center justify-between pb-2">
-                            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                Total Paid
-                            </CardTitle>
-                            <CheckCircle2 className="size-4 text-emerald-600" />
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                                ₹<FormatAmount amount={purchase.paid_amount} />
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-1 capitalize">
-                                Mode: {purchase.payment_mode || 'Unspecified'} ({purchase.payment_status})
-                            </p>
-                        </CardContent>
-                    </Card>
-
-                    <Card className={cn(isOverdue && "border-destructive/40 bg-destructive/5")}>
-                        <CardHeader className="flex flex-row items-center justify-between pb-2">
-                            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                Balance Outstanding
-                            </CardTitle>
-                            <AlertCircle className={cn("size-4", isOverdue ? "text-destructive" : "text-amber-600")} />
-                        </CardHeader>
-                        <CardContent>
-                            <div className={cn("text-2xl font-bold", purchase.due_amount > 0 ? (isOverdue ? "text-destructive" : "text-amber-600 dark:text-amber-400") : "text-foreground")}>
-                                ₹<FormatAmount amount={purchase.due_amount} />
-                            </div>
-                            <p className={cn("text-xs mt-1 flex items-center gap-1", isOverdue ? "text-destructive font-semibold" : "text-muted-foreground")}>
-                                <CalendarClock className="size-3" />
-                                {purchase.due_date ? `Due: ${fmtDate(purchase.due_date)}` : 'No due date set'}
-                            </p>
-                        </CardContent>
-                    </Card>
-
-                    <Card>
-                        <CardHeader className="flex flex-row items-center justify-between pb-2">
-                            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                Input Tax Credit (ITC)
-                            </CardTitle>
-                            <Receipt className="size-4 text-primary" />
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-2xl font-bold text-primary">
-                                ₹<FormatAmount amount={purchase.tax_amount} />
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-1">
-                                {purchase.is_gst_billed ? (purchase.is_intra_state ? 'CGST + SGST (Intra-state)' : 'IGST (Inter-state)') : 'Non-GST Eligible'}
-                            </p>
-                        </CardContent>
-                    </Card>
-                </div>
-
-                {/* ── Vendor & Compliance Card ───────────────────────────── */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-                    {/* Vendor Box */}
-                    <Card className="lg:col-span-2 shadow-sm">
-                        <CardHeader className="pb-3 border-b border-border/50 flex flex-row items-center justify-between">
+                        {/* Party + Document meta */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-5 md:p-6 border-b border-border">
+                            {/* Billed From */}
                             <div>
-                                <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2">
-                                    {purchase.vendor?.type === 'supplier' ? <Building2 className="size-4 text-primary" /> : <UserRound className="size-4 text-primary" />}
-                                    Vendor & Entity Profile
-                                </CardTitle>
-                                <CardDescription className="text-xs">Supplier information associated with this order.</CardDescription>
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                                    {purchase.vendor?.type === 'supplier'
+                                        ? <Building2 className="size-3.5" />
+                                        : <UserRound className="size-3.5" />}
+                                    Billed From · Supplier
+                                </p>
+                                {purchase.vendor ? (
+                                    <div>
+                                        <p className="text-lg font-bold text-foreground">{purchase.vendor.name}</p>
+                                        <div className="mt-2 space-y-1.5 text-xs text-muted-foreground">
+                                            {purchase.vendor.gstin ? (
+                                                <p className="font-semibold text-foreground">GSTIN: {purchase.vendor.gstin}</p>
+                                            ) : (
+                                                <p className="italic">Unregistered supplier — self purchase voucher</p>
+                                            )}
+                                            {purchase.vendor.phone && (
+                                                <p className="flex items-center gap-2"><Phone className="size-3.5 shrink-0" /> {purchase.vendor.phone}</p>
+                                            )}
+                                            {purchase.vendor.email && (
+                                                <p className="flex items-center gap-2"><Mail className="size-3.5 shrink-0" /> {purchase.vendor.email}</p>
+                                            )}
+                                            <p className="flex items-start gap-2">
+                                                <MapPin className="size-3.5 shrink-0 mt-0.5" />
+                                                <span>{purchase.vendor.address || 'No address recorded.'}</span>
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <p className="text-xs text-muted-foreground italic">Walk-in / OTC purchase — no supplier on record.</p>
+                                )}
                             </div>
-                            {purchase.vendor?.gstin && (
-                                <Badge className="bg-primary/10 text-primary border-primary/20 text-xs">
-                                    <BadgeCheck className="mr-1 size-3" /> Registered GST Vendor
-                                </Badge>
-                            )}
-                        </CardHeader>
-                        <CardContent className="pt-4">
-                            {purchase.vendor ? (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                                    <div className="space-y-1">
-                                        <p className="text-base font-bold text-foreground">{purchase.vendor.name}</p>
-                                        <p className="text-muted-foreground capitalize">Classification: {purchase.vendor.type}</p>
-                                        {purchase.vendor.gstin ? (
-                                            <p className="text-foreground font-semibold pt-1">GSTIN: {purchase.vendor.gstin}</p>
-                                        ) : (
-                                            <p className="text-muted-foreground italic pt-1">Unregistered Seller</p>
-                                        )}
-                                    </div>
-                                    <div className="space-y-1.5 text-muted-foreground border-t sm:border-t-0 sm:border-l border-border/50 pt-3 sm:pt-0 sm:pl-4">
-                                        {purchase.vendor.phone && (
-                                            <p className="flex items-center gap-2"><Phone className="size-3.5 text-muted-foreground shrink-0" /> {purchase.vendor.phone}</p>
-                                        )}
-                                        {purchase.vendor.email && (
-                                            <p className="flex items-center gap-2"><Mail className="size-3.5 text-muted-foreground shrink-0" /> {purchase.vendor.email}</p>
-                                        )}
-                                        <p className="flex items-start gap-2">
-                                            <MapPin className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                                            <span>{renderAddress(purchase.vendor.address)}</span>
-                                        </p>
-                                    </div>
-                                </div>
-                            ) : (
-                                <p className="text-xs text-muted-foreground italic">Direct OTC / Self Purchase Voucher</p>
-                            )}
-                        </CardContent>
-                    </Card>
 
-                    {/* Order Meta / Audit */}
+                            {/* Document meta */}
+                            <div className="lg:border-l lg:border-border lg:pl-6">
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                                    <FileText className="size-3.5" /> Document Details
+                                </p>
+                                <dl>
+                                    <MetaRow label="Purchase Bill No.">
+                                        <span className="font-bold">{purchase.po_number}</span>
+                                    </MetaRow>
+                                    <MetaRow label="Supplier Bill Ref.">{purchase.vendor_invoice_no || '—'}</MetaRow>
+                                    <MetaRow label="Bill Type">
+                                        {purchase.bill_type === 'po' ? 'Purchase Bill (B2B tax invoice)' : 'Purchase Voucher (unregistered)'}
+                                    </MetaRow>
+                                    <MetaRow label="Order Date">{fmtDate(purchase.order_date)}</MetaRow>
+                                    <MetaRow label="Payment Due Date">
+                                        <span className={cn(isOverdue && 'text-destructive font-semibold')}>
+                                            {fmtDate(purchase.due_date)}
+                                            {isOverdue && ' · Overdue'}
+                                        </span>
+                                    </MetaRow>
+                                    <MetaRow label="GST Billed">
+                                        {purchase.is_gst_billed
+                                            ? <Badge variant="outline" className="text-[10px] text-emerald-700 border-emerald-400/40 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-400">Yes</Badge>
+                                            : <Badge variant="outline" className="text-[10px] text-muted-foreground">No</Badge>}
+                                    </MetaRow>
+                                    <MetaRow label="Supply Type">
+                                        {purchase.is_intra_state ? 'Intra-state · CGST + SGST' : 'Inter-state · IGST'}
+                                    </MetaRow>
+                                    <MetaRow label="Payment Mode">{purchase.payment_mode || '—'}</MetaRow>
+                                </dl>
+                            </div>
+                        </div>
+
+                        {/* Line Items */}
+                        <div className="p-5 md:p-6 border-b border-border">
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+                                Line Items · {purchase.items.length}
+                            </p>
+                            <div className="overflow-auto rounded-md border border-border">
+                                <Table>
+                                    <TableHeader className="bg-muted/40">
+                                        <TableRow>
+                                            <TableHead className="w-10" />
+                                            <TableHead className="w-12 text-center text-xs font-semibold">#</TableHead>
+                                            <TableHead className="text-xs font-semibold">Item</TableHead>
+                                            <TableHead className="text-center text-xs font-semibold">Qty</TableHead>
+                                            <TableHead className="text-right text-xs font-semibold">Rate</TableHead>
+                                            <TableHead className="text-right text-xs font-semibold">Tax %</TableHead>
+                                            <TableHead className="text-right text-xs font-semibold">Tax Amt</TableHead>
+                                            <TableHead className="text-right text-xs font-semibold">Amount</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {purchase.items.map((item, idx) => {
+                                            const expanded = expandedRows.has(item.id);
+                                            const hasTrace = item.units.length > 0 || item.batches.length > 0;
+                                            return (
+                                                <React.Fragment key={item.id}>
+                                                    <TableRow className={cn('hover:bg-muted/20', expanded && 'bg-muted/20')}>
+                                                        <TableCell className="w-10 pr-0">
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="size-7"
+                                                                onClick={() => toggleRow(item.id)}
+                                                                aria-label={expanded ? 'Collapse line detail' : 'Expand line detail'}
+                                                            >
+                                                                {expanded
+                                                                    ? <ChevronDown className="size-4 text-muted-foreground" />
+                                                                    : <ChevronRight className="size-4 text-muted-foreground" />}
+                                                            </Button>
+                                                        </TableCell>
+                                                        <TableCell className="text-center text-xs font-medium text-muted-foreground">{idx + 1}</TableCell>
+                                                        <TableCell>
+                                                            <p className="text-xs font-bold text-foreground">{item.product_name}</p>
+                                                            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                                                {item.sku && <span className="text-[11px] text-muted-foreground">SKU: {item.sku}</span>}
+                                                                <Badge variant="outline" className="text-[10px] capitalize">
+                                                                    {item.is_serialized ? 'Serialized' : 'Bulk'}
+                                                                </Badge>
+                                                                {item.is_margin_scheme && (
+                                                                    <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300">Margin Scheme</Badge>
+                                                                )}
+                                                            </div>
+                                                        </TableCell>
+                                                        <TableCell className="text-center text-xs font-semibold tabular-nums">{item.ordered_qty}</TableCell>
+                                                        <TableCell className="text-right text-xs tabular-nums">₹<FormatAmount amount={item.unit_cost} /></TableCell>
+                                                        <TableCell className="text-right text-xs tabular-nums">{item.tax_amount > 0 ? `${item.tax_pct}%` : '—'}</TableCell>
+                                                        <TableCell className="text-right text-xs tabular-nums text-primary font-medium">
+                                                            {item.tax_amount > 0 ? <>₹<FormatAmount amount={item.tax_amount} /></> : '—'}
+                                                        </TableCell>
+                                                        <TableCell className="text-right text-xs font-bold tabular-nums text-foreground">₹<FormatAmount amount={item.line_total} /></TableCell>
+                                                    </TableRow>
+                                                    {expanded && (
+                                                        <TableRow className="bg-muted/20 hover:bg-muted/20">
+                                                            <TableCell colSpan={8} className="py-3 px-4 md:px-10">
+                                                                {item.is_serialized && item.units.length > 0 && (
+                                                                    <div>
+                                                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                                                                            <Cpu className="size-3.5" />
+                                                                            Serialized stock · {item.units.length} unit{item.units.length === 1 ? '' : 's'} — IMEI / serial numbers
+                                                                        </p>
+                                                                        <div className="overflow-auto rounded-md border border-border bg-background">
+                                                                            <Table>
+                                                                                <TableHeader>
+                                                                                    <TableRow>
+                                                                                        <TableHead className="text-[11px]">IMEI 1 / Serial</TableHead>
+                                                                                        <TableHead className="text-[11px]">IMEI 2</TableHead>
+                                                                                        <TableHead className="text-[11px]">Condition</TableHead>
+                                                                                        <TableHead className="text-[11px]">Health</TableHead>
+                                                                                        <TableHead className="text-[11px]">Stock Status</TableHead>
+                                                                                        <TableHead className="text-right text-[11px]">Landed Cost</TableHead>
+                                                                                    </TableRow>
+                                                                                </TableHeader>
+                                                                                <TableBody>
+                                                                                    {item.units.map((u) => (
+                                                                                        <TableRow key={u.id}>
+                                                                                            <TableCell className="text-xs font-bold text-primary font-mono">
+                                                                                                {u.imei1 || u.serial_number || '—'}
+                                                                                            </TableCell>
+                                                                                            <TableCell className="text-xs text-muted-foreground font-mono">{u.imei2 || '—'}</TableCell>
+                                                                                            <TableCell className="text-xs capitalize">{u.device_condition || 'New'}</TableCell>
+                                                                                            <TableCell className="text-xs">
+                                                                                                {u.battery_health ? `${u.battery_health}% battery` : u.overall_health || '—'}
+                                                                                            </TableCell>
+                                                                                            <TableCell>
+                                                                                                <Badge variant="outline" className="text-[10px] uppercase">{u.status}</Badge>
+                                                                                                {u.is_margin_scheme && (
+                                                                                                    <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300 ml-1.5">Margin</Badge>
+                                                                                                )}
+                                                                                            </TableCell>
+                                                                                            <TableCell className="text-right text-xs font-semibold tabular-nums">
+                                                                                                ₹<FormatAmount amount={u.landed_cost} />
+                                                                                            </TableCell>
+                                                                                        </TableRow>
+                                                                                    ))}
+                                                                                </TableBody>
+                                                                            </Table>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {!item.is_serialized && item.batches.length > 0 && (
+                                                                    <div>
+                                                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                                                                            <Boxes className="size-3.5" />
+                                                                            Bulk stock · {item.batches.length} batch{item.batches.length === 1 ? '' : 'es'} received
+                                                                        </p>
+                                                                        <div className="overflow-auto rounded-md border border-border bg-background">
+                                                                            <Table>
+                                                                                <TableHeader>
+                                                                                    <TableRow>
+                                                                                        <TableHead className="text-[11px]">Batch No.</TableHead>
+                                                                                        <TableHead className="text-center text-[11px]">Received Qty</TableHead>
+                                                                                        <TableHead className="text-center text-[11px]">Remaining Qty</TableHead>
+                                                                                        <TableHead className="text-right text-[11px]">Landed Cost / unit</TableHead>
+                                                                                    </TableRow>
+                                                                                </TableHeader>
+                                                                                <TableBody>
+                                                                                    {item.batches.map((b) => (
+                                                                                        <TableRow key={b.id}>
+                                                                                            <TableCell className="text-xs font-bold text-primary">#{b.batch_number}</TableCell>
+                                                                                            <TableCell className="text-center text-xs font-semibold tabular-nums">{b.received_qty}</TableCell>
+                                                                                            <TableCell className="text-center text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{b.remaining_qty}</TableCell>
+                                                                                            <TableCell className="text-right text-xs font-semibold tabular-nums">
+                                                                                                ₹<FormatAmount amount={b.landed_cost} />
+                                                                                            </TableCell>
+                                                                                        </TableRow>
+                                                                                    ))}
+                                                                                </TableBody>
+                                                                            </Table>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                                {!hasTrace && (
+                                                                    <p className="text-xs text-muted-foreground italic">No stock trace recorded for this line.</p>
+                                                                )}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    )}
+                                                </React.Fragment>
+                                            );
+                                        })}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground mt-2">
+                                Click the chevron on any row to view IMEI / serial numbers or batch details.
+                            </p>
+                        </div>
+
+                        {/* Tax breakup + Totals */}
+                        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 p-5 md:p-6">
+                            {/* Tax breakup */}
+                            <div className="lg:col-span-3">
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                                    <Receipt className="size-3.5" /> Tax Breakup
+                                </p>
+                                {purchase.is_gst_billed ? (
+                                    <>
+                                        <div className="overflow-auto rounded-md border border-border">
+                                            <Table>
+                                                <TableHeader className="bg-muted/40">
+                                                    <TableRow>
+                                                        <TableHead className="text-[11px] font-semibold">GST Rate</TableHead>
+                                                        <TableHead className="text-right text-[11px] font-semibold">Taxable Value</TableHead>
+                                                        {purchase.is_intra_state ? (
+                                                            <>
+                                                                <TableHead className="text-right text-[11px] font-semibold">CGST</TableHead>
+                                                                <TableHead className="text-right text-[11px] font-semibold">SGST</TableHead>
+                                                            </>
+                                                        ) : (
+                                                            <TableHead className="text-right text-[11px] font-semibold">IGST</TableHead>
+                                                        )}
+                                                        <TableHead className="text-right text-[11px] font-semibold">Total Tax</TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {taxGroups.map(([rate, g]) => (
+                                                        <TableRow key={rate}>
+                                                            <TableCell className="text-xs font-semibold">{rate}%</TableCell>
+                                                            <TableCell className="text-right text-xs tabular-nums">₹<FormatAmount amount={g.taxable} /></TableCell>
+                                                            {purchase.is_intra_state ? (
+                                                                <>
+                                                                    <TableCell className="text-right text-xs tabular-nums">₹<FormatAmount amount={g.tax / 2} /></TableCell>
+                                                                    <TableCell className="text-right text-xs tabular-nums">₹<FormatAmount amount={g.tax / 2} /></TableCell>
+                                                                </>
+                                                            ) : (
+                                                                <TableCell className="text-right text-xs tabular-nums">₹<FormatAmount amount={g.tax} /></TableCell>
+                                                            )}
+                                                            <TableCell className="text-right text-xs font-semibold tabular-nums text-primary">
+                                                                ₹<FormatAmount amount={g.tax} />
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+                                        {anyMarginScheme && (
+                                            <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-2">
+                                                Margin-scheme lines are taxed only on the margin (selling price − landed cost).
+                                            </p>
+                                        )}
+                                    </>
+                                ) : (
+                                    <p className="text-xs text-muted-foreground italic border border-dashed border-border rounded-md p-4">
+                                        No GST billed on this purchase — tax breakup not applicable.
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Totals */}
+                            <div className="lg:col-span-2 lg:border-l lg:border-border lg:pl-6">
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                                    Bill Totals
+                                </p>
+                                <TotalRow label="Subtotal (taxable)" amount={purchase.subtotal} />
+                                {purchase.discount_amount > 0 && (
+                                    <div className="flex items-center justify-between py-1 text-sm">
+                                        <span className="text-emerald-600 dark:text-emerald-400">Less: Discount</span>
+                                        <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">− ₹<FormatAmount amount={purchase.discount_amount} /></span>
+                                    </div>
+                                )}
+                                {purchase.shipping_charge > 0 && (
+                                    <div className="flex items-center justify-between py-1 text-sm">
+                                        <span className="text-muted-foreground">Add: Shipping / Freight</span>
+                                        <span className="font-semibold tabular-nums text-foreground">+ ₹<FormatAmount amount={purchase.shipping_charge} /></span>
+                                    </div>
+                                )}
+                                {purchase.is_gst_billed && (
+                                    <div className="flex items-center justify-between py-1 text-sm">
+                                        <span className="text-muted-foreground">
+                                            Add: GST ({purchase.is_intra_state ? 'CGST + SGST' : 'IGST'})
+                                        </span>
+                                        <span className="font-semibold tabular-nums text-primary">+ ₹<FormatAmount amount={purchase.tax_amount} /></span>
+                                    </div>
+                                )}
+                                {roundOff !== null && roundOff !== 0 && (
+                                    <div className="flex items-center justify-between py-1 text-sm">
+                                        <span className="text-muted-foreground">Round Off</span>
+                                        <span className="font-semibold tabular-nums text-foreground">
+                                            {roundOff > 0 ? '+' : '−'} ₹<FormatAmount amount={Math.abs(roundOff)} />
+                                        </span>
+                                    </div>
+                                )}
+                                <Separator className="my-2" />
+                                <div className="flex items-center justify-between py-1">
+                                    <span className="text-sm font-bold text-foreground">Grand Total</span>
+                                    <span className="text-xl font-bold tabular-nums text-foreground">₹<FormatAmount amount={purchase.grand_total} /></span>
+                                </div>
+                                <Separator className="my-2" />
+                                <div className="flex items-center justify-between py-1 text-sm">
+                                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">Paid</span>
+                                    <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">₹<FormatAmount amount={purchase.paid_amount} /></span>
+                                </div>
+                                <div className="flex items-center justify-between py-1 text-sm">
+                                    <span className={cn('font-bold', purchase.due_amount > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground')}>Balance Due</span>
+                                    <span className={cn('font-bold tabular-nums', purchase.due_amount > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground')}>
+                                        ₹<FormatAmount amount={purchase.due_amount} />
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </CardContent>
+                </Card>
+
+                {/* ── Payment Summary ────────────────────────────────── */}
+                <Card className="shadow-sm">
+                    <CardHeader className="pb-3 border-b border-border/50">
+                        <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2">
+                            <Wallet className="size-4 text-primary" /> Payment Summary
+                        </CardTitle>
+                        <CardDescription className="text-xs">Settlement position against this purchase bill.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="pt-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                            <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Paid</p>
+                                <p className="text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
+                                    ₹<FormatAmount amount={purchase.paid_amount} />
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-1">Mode: {purchase.payment_mode || '—'}</p>
+                            </div>
+                            <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Due</p>
+                                <p className={cn('text-2xl font-bold tabular-nums mt-1', purchase.due_amount > 0 ? (isOverdue ? 'text-destructive' : 'text-amber-600 dark:text-amber-400') : 'text-foreground')}>
+                                    ₹<FormatAmount amount={purchase.due_amount} />
+                                </p>
+                                <p className={cn('text-xs mt-1 flex items-center gap-1', isOverdue ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
+                                    <CalendarClock className="size-3" />
+                                    {purchase.due_date ? `Due ${fmtDate(purchase.due_date)}` : 'No due date set'}
+                                    {isOverdue && ' · Overdue'}
+                                </p>
+                            </div>
+                            <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Status</p>
+                                <div className="mt-2">
+                                    <Badge variant="outline" className={cn('capitalize text-xs font-medium', paymentStatusBadge(purchase.payment_status))}>
+                                        {purchase.payment_status}
+                                    </Badge>
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-2">of ₹<FormatAmount amount={purchase.grand_total} /> grand total</p>
+                            </div>
+                        </div>
+                        <Progress value={paidPct} className="h-2" />
+                        <p className="text-[11px] text-muted-foreground mt-1.5 text-right">{paidPct.toFixed(1)}% settled</p>
+                    </CardContent>
+                </Card>
+
+                {/* ── Linked Documents ───────────────────────────────── */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {/* Debit Notes */}
                     <Card className="shadow-sm">
                         <CardHeader className="pb-3 border-b border-border/50">
                             <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2">
-                                <ShieldCheck className="size-4 text-primary" />
-                                Audit & Execution
+                                <FileText className="size-4 text-primary" /> Debit Notes
+                                <Badge variant="outline" className="text-[10px] ml-1">{debitNotes.length}</Badge>
                             </CardTitle>
-                            <CardDescription className="text-xs">System logging details.</CardDescription>
+                            <CardDescription className="text-xs">Purchase returns / debit notes raised against this bill.</CardDescription>
                         </CardHeader>
-                        <CardContent className="pt-4 text-xs space-y-3">
-                            <div className="flex items-center justify-between">
-                                <span className="text-muted-foreground flex items-center gap-1.5"><User className="size-3.5" /> Created By:</span>
-                                <span className="font-semibold text-foreground">{purchase.created_by || 'System'}</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                                <span className="text-muted-foreground flex items-center gap-1.5"><Clock className="size-3.5" /> Timestamp:</span>
-                                <span className="text-foreground">{fmtDate(purchase.created_at)}</span>
-                            </div>
-                            {purchase.approved_by && (
-                                <div className="flex items-center justify-between pt-2 border-t border-border/50">
-                                    <span className="text-muted-foreground flex items-center gap-1.5"><BadgeCheck className="size-3.5 text-primary" /> Approved By:</span>
-                                    <span className="font-semibold text-foreground">{purchase.approved_by}</span>
-                                </div>
+                        <CardContent className="pt-4">
+                            {debitNotes.length > 0 ? (
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead className="text-[11px]">Note No.</TableHead>
+                                            <TableHead className="text-[11px]">Date</TableHead>
+                                            <TableHead className="text-[11px]">Reason</TableHead>
+                                            <TableHead className="text-right text-[11px]">Amount</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {debitNotes.map((dn) => (
+                                            <TableRow key={dn.id}>
+                                                <TableCell className="text-xs font-bold text-primary">{dn.debit_note_number}</TableCell>
+                                                <TableCell className="text-xs">{fmtDate(dn.note_date)}</TableCell>
+                                                <TableCell className="text-xs text-muted-foreground">{dn.reason || '—'}</TableCell>
+                                                <TableCell className="text-right text-xs font-semibold tabular-nums">₹<FormatAmount amount={dn.amount} /></TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            ) : (
+                                <p className="text-xs text-muted-foreground italic py-2">No debit notes raised against this purchase.</p>
+                            )}
+                        </CardContent>
+                    </Card>
+
+                    {/* Payments */}
+                    <Card className="shadow-sm">
+                        <CardHeader className="pb-3 border-b border-border/50">
+                            <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2">
+                                <Landmark className="size-4 text-primary" /> Payments Made
+                                <Badge variant="outline" className="text-[10px] ml-1">{payments.length}</Badge>
+                            </CardTitle>
+                            <CardDescription className="text-xs">Supplier payments recorded against this bill.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="pt-4">
+                            {payments.length > 0 ? (
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead className="text-[11px]">Payment</TableHead>
+                                            <TableHead className="text-[11px]">Date</TableHead>
+                                            <TableHead className="text-[11px]">Mode</TableHead>
+                                            <TableHead className="text-right text-[11px]">Amount</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {payments.map((p) => (
+                                            <TableRow key={p.id}>
+                                                <TableCell className="text-xs font-bold text-primary">
+                                                    {p.payment_number || `#${p.id}`}
+                                                    {p.reference_no && <span className="block text-[11px] font-normal text-muted-foreground">Ref: {p.reference_no}</span>}
+                                                </TableCell>
+                                                <TableCell className="text-xs">{fmtDate(p.payment_date)}</TableCell>
+                                                <TableCell className="text-xs capitalize">{p.payment_mode || '—'}</TableCell>
+                                                <TableCell className="text-right text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                                                    ₹<FormatAmount amount={p.amount} />
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            ) : (
+                                <p className="text-xs text-muted-foreground italic py-2">No payments recorded against this purchase yet.</p>
                             )}
                         </CardContent>
                     </Card>
                 </div>
 
-                {/* ── Tabbed Detail Management ────────────────────────────── */}
-                <Tabs defaultValue="items" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3 max-w-md">
-                        <TabsTrigger value="items" className="text-xs flex items-center gap-1.5">
-                            <FileSpreadsheet className="size-3.5" /> Line Items ({purchase.items.length})
-                        </TabsTrigger>
-                        <TabsTrigger value="units" className="text-xs flex items-center gap-1.5" disabled={allUnits.length === 0}>
-                            <Cpu className="size-3.5" /> IMEIs / Serials ({allUnits.length})
-                        </TabsTrigger>
-                        <TabsTrigger value="batches" className="text-xs flex items-center gap-1.5" disabled={allBatches.length === 0}>
-                            <HardDrive className="size-3.5" /> Stock Batches ({allBatches.length})
-                        </TabsTrigger>
-                    </TabsList>
-
-                    {/* Tab 1: Line Items */}
-                    <TabsContent value="items" className="mt-3">
-                        <Card className="shadow-sm">
-                            <CardContent className="p-0 overflow-auto">
-                                <Table>
-                                    <TableHeader className="bg-muted/30">
-                                        <TableRow>
-                                            <TableHead className="w-12 text-center text-xs font-semibold">#</TableHead>
-                                            <TableHead className="text-xs font-semibold">Item & Description</TableHead>
-                                            <TableHead className="text-center text-xs font-semibold">Qty</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Unit Cost</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Base Total</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Tax (GST)</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Landed Cost</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Line Total</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {purchase.items.map((item, idx) => (
-                                            <TableRow key={item.id} className="hover:bg-muted/20">
-                                                <TableCell className="text-center text-xs font-medium text-muted-foreground">{idx + 1}</TableCell>
-                                                <TableCell>
-                                                    <p className="text-xs font-bold text-foreground">{item.product_name}</p>
-                                                    {item.sku && <p className="text-xs text-muted-foreground">SKU: {item.sku}</p>}
-                                                    {item.is_margin_scheme && (
-                                                        <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300 mt-1">Margin Scheme</Badge>
-                                                    )}
-                                                </TableCell>
-                                                <TableCell className="text-center text-xs font-semibold">{item.ordered_qty}</TableCell>
-                                                <TableCell className="text-right text-xs">₹<FormatAmount amount={item.unit_cost} /></TableCell>
-                                                <TableCell className="text-right text-xs text-muted-foreground">₹<FormatAmount amount={item.base_cost} /></TableCell>
-                                                <TableCell className="text-right text-xs text-primary font-medium">
-                                                    {item.tax_amount > 0 ? <>₹<FormatAmount amount={item.tax_amount} /> ({item.tax_pct}%)</> : '—'}
-                                                </TableCell>
-                                                <TableCell className="text-right text-xs font-medium">₹<FormatAmount amount={item.landed_cost} /></TableCell>
-                                                <TableCell className="text-right text-xs font-bold text-foreground">₹<FormatAmount amount={item.line_total} /></TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
-
-                    {/* Tab 2: Serialized Units */}
-                    <TabsContent value="units" className="mt-3">
-                        <Card className="shadow-sm">
-                            <CardContent className="p-0 overflow-auto">
-                                <Table>
-                                    <TableHeader className="bg-muted/30">
-                                        <TableRow>
-                                            <TableHead className="w-12 text-center text-xs font-semibold">#</TableHead>
-                                            <TableHead className="text-xs font-semibold">IMEI 1 / Serial</TableHead>
-                                            <TableHead className="text-xs font-semibold">IMEI 2</TableHead>
-                                            <TableHead className="text-xs font-semibold">Device Condition</TableHead>
-                                            <TableHead className="text-xs font-semibold">Health</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Landed Cost</TableHead>
-                                            <TableHead className="text-xs font-semibold">Stock Status</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {allUnits.map((u, i) => (
-                                            <TableRow key={u.id} className="hover:bg-muted/20">
-                                                <TableCell className="text-center text-xs text-muted-foreground">{i + 1}</TableCell>
-                                                <TableCell className="text-xs font-bold text-primary">{u.imei1 || u.serial_number || '—'}</TableCell>
-                                                <TableCell className="text-xs text-muted-foreground">{u.imei2 || '—'}</TableCell>
-                                                <TableCell className="text-xs capitalize">{u.device_condition || 'New'}</TableCell>
-                                                <TableCell className="text-xs">{u.battery_health ? `${u.battery_health}% Battery` : u.overall_health || '—'}</TableCell>
-                                                <TableCell className="text-right text-xs font-semibold">₹<FormatAmount amount={u.landed_cost} /></TableCell>
-                                                <TableCell>
-                                                    <Badge variant="outline" className="text-[10px] uppercase">{u.status}</Badge>
-                                                </TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
-
-                    {/* Tab 3: Stock Batches */}
-                    <TabsContent value="batches" className="mt-3">
-                        <Card className="shadow-sm">
-                            <CardContent className="p-0 overflow-auto">
-                                <Table>
-                                    <TableHeader className="bg-muted/30">
-                                        <TableRow>
-                                            <TableHead className="w-12 text-center text-xs font-semibold">#</TableHead>
-                                            <TableHead className="text-xs font-semibold">Batch Number</TableHead>
-                                            <TableHead className="text-center text-xs font-semibold">Received Qty</TableHead>
-                                            <TableHead className="text-center text-xs font-semibold">Remaining Qty</TableHead>
-                                            <TableHead className="text-right text-xs font-semibold">Landed Cost</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {allBatches.map((b, i) => (
-                                            <TableRow key={b.id} className="hover:bg-muted/20">
-                                                <TableCell className="text-center text-xs text-muted-foreground">{i + 1}</TableCell>
-                                                <TableCell className="text-xs font-bold text-primary">#{b.batch_number}</TableCell>
-                                                <TableCell className="text-center text-xs font-semibold">{b.received_qty}</TableCell>
-                                                <TableCell className="text-center text-xs font-semibold text-emerald-600">{b.remaining_qty}</TableCell>
-                                                <TableCell className="text-right text-xs font-bold">₹<FormatAmount amount={b.landed_cost} /></TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </CardContent>
-                        </Card>
-                    </TabsContent>
-                </Tabs>
-
-                {/* ── Financial Ledger Breakdown ──────────────────────────── */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* ── Notes + Audit Trail ────────────────────────────── */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
                     <Card className="shadow-sm">
                         <CardHeader className="pb-3 border-b border-border/50">
-                            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                Vendor Voucher Notes
+                            <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2">
+                                <StickyNote className="size-4 text-primary" /> Remarks
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="pt-4">
                             <p className="text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">
-                                {purchase.notes || 'No remarks recorded for this purchase voucher.'}
+                                {purchase.notes || 'No remarks recorded for this purchase bill.'}
                             </p>
                         </CardContent>
                     </Card>
 
                     <Card className="shadow-sm">
                         <CardHeader className="pb-3 border-b border-border/50">
-                            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                Order Accounting Summary
+                            <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2">
+                                <History className="size-4 text-primary" /> Audit Trail
                             </CardTitle>
+                            <CardDescription className="text-xs">Who created, approved, and revised this bill.</CardDescription>
                         </CardHeader>
-                        <CardContent className="pt-4 text-xs space-y-2">
-                            <div className="flex justify-between text-muted-foreground">
-                                <span>Subtotal Base Cost:</span>
-                                <span className="font-semibold text-foreground">₹<FormatAmount amount={purchase.subtotal} /></span>
+                        <CardContent className="pt-4 text-xs space-y-2.5">
+                            <div className="flex items-center justify-between">
+                                <span className="text-muted-foreground flex items-center gap-1.5"><User className="size-3.5" /> Created By</span>
+                                <span className="font-semibold text-foreground">{purchase.created_by || 'System'}</span>
                             </div>
-                            {purchase.is_gst_billed && (
-                                <div className="flex justify-between text-primary font-medium">
-                                    <span>Tax Amount (GST):</span>
-                                    <span>+ ₹<FormatAmount amount={purchase.tax_amount} /></span>
+                            <div className="flex items-center justify-between">
+                                <span className="text-muted-foreground flex items-center gap-1.5"><Clock className="size-3.5" /> Created At</span>
+                                <span className="text-foreground">{fmtDate(purchase.created_at)}</span>
+                            </div>
+                            {purchase.approved_by && (
+                                <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                                    <span className="text-muted-foreground flex items-center gap-1.5"><BadgeCheck className="size-3.5 text-primary" /> Approved By</span>
+                                    <span className="font-semibold text-foreground">
+                                        {purchase.approved_by}
+                                        {purchase.approved_at && <span className="block text-[11px] font-normal text-muted-foreground">{fmtDate(purchase.approved_at)}</span>}
+                                    </span>
                                 </div>
                             )}
-                            {purchase.discount_amount > 0 && (
-                                <div className="flex justify-between text-emerald-600 font-medium">
-                                    <span>Discount Received:</span>
-                                    <span>- ₹<FormatAmount amount={purchase.discount_amount} /></span>
+                            {purchase.revision > 0 && (
+                                <div className="pt-2 border-t border-border/50 space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Revision</span>
+                                        <Badge variant="outline" className="text-[10px]">Rev {purchase.revision}</Badge>
+                                    </div>
+                                    {purchase.revised_by && (
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-muted-foreground">Revised By</span>
+                                            <span className="font-semibold text-foreground">{purchase.revised_by}</span>
+                                        </div>
+                                    )}
+                                    {purchase.revision_reason && (
+                                        <p className="text-muted-foreground"><span className="font-medium text-foreground">Reason:</span> {purchase.revision_reason}</p>
+                                    )}
                                 </div>
                             )}
-                            {purchase.shipping_charge > 0 && (
-                                <div className="flex justify-between text-amber-600 font-medium">
-                                    <span>Freight Inward Charge:</span>
-                                    <span>+ ₹<FormatAmount amount={purchase.shipping_charge} /></span>
-                                </div>
+                            {!purchase.mutable.mutable && purchase.mutable.reason && (
+                                <p className="text-[11px] text-amber-700 dark:text-amber-400 flex items-start gap-1.5 pt-2 border-t border-border/50">
+                                    <AlertCircle className="size-3.5 shrink-0 mt-0.5" />
+                                    {purchase.mutable.reason}
+                                </p>
                             )}
-                            <div className="border-t border-border pt-2 flex justify-between text-base font-bold text-foreground">
-                                <span>Grand Total Payable:</span>
-                                <span>₹<FormatAmount amount={purchase.grand_total} /></span>
-                            </div>
-                            <div className="flex justify-between text-emerald-600 font-semibold pt-1">
-                                <span>Amount Settled / Paid:</span>
-                                <span>₹<FormatAmount amount={purchase.paid_amount} /></span>
-                            </div>
-                            <div className="flex justify-between text-amber-600 font-bold pt-1 border-t border-border/50">
-                                <span>Outstanding Balance Due:</span>
-                                <span>₹<FormatAmount amount={purchase.due_amount} /></span>
-                            </div>
                         </CardContent>
                     </Card>
                 </div>
 
             </div>
+
+            {/* ── Delete confirm ─────────────────────────────────────── */}
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete Purchase {purchase.po_number}?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This will reverse the stock intake and journal entries for this purchase and delete the bill.
+                            This action cannot be undone.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={handleDelete}
+                            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                        >
+                            Delete Purchase
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </>
     );
 }
@@ -545,6 +890,6 @@ Show.layout = {
     breadcrumbs: [
         { title: 'Dashboard', href: dashboard() },
         { title: 'Purchases', href: app.purchases.index.url() },
-        { title: 'View Details', href: '#' },
+        { title: 'Purchase Bill', href: '#' },
     ],
 };

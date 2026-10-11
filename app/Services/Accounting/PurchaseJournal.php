@@ -47,7 +47,7 @@ final class PurchaseJournal
 
     public function __construct(private readonly AccountingService $accounting) {}
 
-    public function post(PurchaseOrder $po, Store $store, User $user, array $data): void
+    public function post(PurchaseOrder $po, Store $store, User $user, array $data, string $entrySuffix = ''): void
     {
         $subtotal = JournalEntryData::toPaise($data['subtotal'] ?? 0);
         $tax      = JournalEntryData::toPaise($data['tax_amount'] ?? 0);
@@ -92,7 +92,7 @@ final class PurchaseJournal
 
         $this->accounting->post(new JournalEntryData(
             storeId:       $store->id,
-            entryNumber:   'JE-' . $po->po_number,
+            entryNumber:   'JE-' . $po->po_number . $entrySuffix,
             entryDate:     (string) $po->order_date,
             referenceType: PurchaseOrder::class,
             referenceId:   (int) $po->id,
@@ -107,7 +107,7 @@ final class PurchaseJournal
 
             $this->accounting->post(new JournalEntryData(
                 storeId:       $store->id,
-                entryNumber:   'JE-PAY-' . $po->po_number,
+                entryNumber:   'JE-PAY-' . $po->po_number . $entrySuffix,
                 entryDate:     (string) $po->order_date,
                 referenceType: PurchaseOrder::class,
                 referenceId:   (int) $po->id,

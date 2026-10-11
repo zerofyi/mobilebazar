@@ -6,6 +6,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Billing\StorePurchaseRequest;
+use App\Http\Requests\Billing\UpdatePurchaseRequest;
 use App\Models\DeviceCondition;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
@@ -136,6 +137,152 @@ class PurchaseEntryController extends Controller
 
     /*
     |--------------------------------------------------------------------------
+    | edit — load any purchase into the entry form for revision.
+    | Every record is editable; row-level guards apply at update time.
+    |--------------------------------------------------------------------------
+    */
+    public function edit(string $uuid): Response|RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $purchase = PurchaseOrder::with([
+            'vendor',
+            'items.productVariant:id,variant_name,sku',
+            'items.stockUnits.deviceHealth:id,stock_unit_id,battery_health_pct',
+            'items.stockBatches',
+        ])
+            ->where('store_id', $store->id)
+            ->where('uuid', $uuid)
+            ->firstOrFail();
+
+        $deviceConditions = DeviceCondition::select('id', 'code', 'label', 'grade_multiplier')
+            ->orderBy('id')
+            ->get();
+
+        return Inertia::render('Billing/PurchaseEntry/Edit', [
+            'purchase'         => $this->serializeForEdit($purchase),
+            'store'            => $store,
+            'deviceConditions' => $deviceConditions,
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | update — reverse-and-repost inside one transaction
+    |--------------------------------------------------------------------------
+    */
+    public function update(UpdatePurchaseRequest $request, string $uuid): RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $purchase = PurchaseOrder::where('store_id', $store->id)
+            ->where('uuid', $uuid)
+            ->firstOrFail();
+
+        try {
+            $updated = $this->purchaseService->updatePurchase(
+                store: $store,
+                user:  $user,
+                po:    $purchase,
+                data:  $request->validated(),
+            );
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return back()->withErrors($e->errors())->withInput();
+        } catch (\App\Exceptions\MonthLockedException $e) {
+            return back()->withErrors(['purchase' => $e->getMessage()])->withInput();
+        }
+
+        return redirect()
+            ->route('app.purchases.show', $updated->uuid)
+            ->with('flash', [
+                'type'    => 'success',
+                'message' => "Purchase {$updated->po_number} updated (revision {$updated->revision}).",
+            ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | destroy — reverse everything, then soft-delete the purchase
+    |--------------------------------------------------------------------------
+    */
+    public function destroy(string $uuid): RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $purchase = PurchaseOrder::where('store_id', $store->id)
+            ->where('uuid', $uuid)
+            ->firstOrFail();
+
+        $poNumber = $purchase->po_number;
+
+        try {
+            $this->purchaseService->deletePurchase($store, $user, $purchase);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return back()->withErrors($e->errors());
+        } catch (\App\Exceptions\MonthLockedException $e) {
+            return back()->withErrors(['purchase' => $e->getMessage()]);
+        }
+
+        return redirect()
+            ->route('app.purchases.index')
+            ->with('flash', ['type' => 'success', 'message' => "Purchase {$poNumber} deleted. Journals were reversed, not removed."]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | purge — hard-delete a DRAFT (nothing was ever posted)
+    |--------------------------------------------------------------------------
+    */
+    public function purge(string $uuid): RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $purchase = PurchaseOrder::where('store_id', $store->id)
+            ->where('uuid', $uuid)
+            ->firstOrFail();
+
+        $poNumber = $purchase->po_number;
+
+        try {
+            $this->purchaseService->purgeDraft($store, $purchase);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return back()->withErrors($e->errors());
+        }
+
+        return redirect()
+            ->route('app.purchases.index')
+            ->with('flash', ['type' => 'success', 'message' => "Draft {$poNumber} purged."]);
+    }
+
+    /**
+     * Every purchase is editable and deletable (row-level guards apply at
+     * submit time). Kept for the Show/Index pages' UI hints.
+     *
+     * @return array{mutable: bool, reason: ?string}
+     */
+    private function mutableFlag(PurchaseOrder $po, \App\Models\Store $store): array
+    {
+        return ['mutable' => true, 'reason' => null];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | show — full purchase detail
     |--------------------------------------------------------------------------
     */
@@ -161,7 +308,7 @@ class PurchaseEntryController extends Controller
             ->firstOrFail();
 
         return Inertia::render('App/Purchases/Show', [
-            'purchase' => $this->serializeForShow($purchase),
+            'purchase' => $this->serializeForShow($purchase, $store),
         ]);
     }
 
@@ -191,6 +338,7 @@ class PurchaseEntryController extends Controller
                     'serial_number',
                     'device_condition',
                     'overall_health',
+                    'activation_date',
                     'warranty_expiry_date',
                     'remaining_warranty',
                     'is_margin_scheme',
@@ -219,6 +367,102 @@ class PurchaseEntryController extends Controller
     | Private serializers (keep controller thin, no logic here)
     |--------------------------------------------------------------------------
     */
+
+    /**
+     * Serialize a posted purchase for the Edit form. The frontend hydrates
+     * the purchase-context reducer from this: one LineRow per serialized
+     * unit, one per bulk batch-group, with the persisted per-unit values so
+     * the recomputed totals match the posted document until the user edits.
+     */
+    private function serializeForEdit(PurchaseOrder $po): array
+    {
+        $vendor     = $po->vendor;
+        $isSupplier = $vendor instanceof \App\Models\Supplier;
+
+        return [
+            'uuid'              => $po->uuid,
+            'po_number'         => $po->po_number,
+            'vendor_invoice_no' => $po->vendor_invoice_no,
+            'order_date'        => $po->order_date?->toDateString(),
+            'bill_type'         => $po->bill_type,
+            'is_gst_billed'     => (bool) $po->is_gst_billed,
+            'is_intra_state'    => (bool) $po->is_intra_state,
+            'type'              => $po->type,
+            'status'            => $po->status,
+            'revision'          => (int) $po->revision,
+            'party_type'        => $isSupplier ? 'supplier' : 'customer',
+            'party'             => $vendor ? [
+                'id'            => $vendor->id,
+                'uuid'          => $vendor->uuid ?? null,
+                'name'          => $isSupplier ? ($vendor->company_name ?: $vendor->name) : $vendor->name,
+                'phone_primary' => $vendor->phone_primary ?? $vendor->phone ?? null,
+                'email'         => $vendor->email ?? null,
+                'gstin'         => $vendor->gstin ?? null,
+            ] : null,
+            'subtotal'             => (float) $po->subtotal,
+            'tax_amount'           => (float) $po->tax_amount,
+            'discount_amount'      => (float) $po->discount_amount,
+            'shipping_charge'      => (float) $po->shipping_charge,
+            'grand_total'          => (float) $po->grand_total,
+            'paid_amount'          => (float) $po->paid_amount,
+            'due_amount'           => (float) $po->due_amount,
+            'payment_status'       => $po->payment_status,
+            'payment_mode'         => $po->payment_mode,
+            'notes'                => $po->notes,
+            'invoice_document_path'    => $po->invoice_document_path,
+            'additional_document_path' => $po->additional_document_path,
+            'lines' => $po->items->map(fn ($item) => [
+                'purchase_order_item_id' => $item->id,
+                'product_variant_id' => $item->product_variant_id,
+                'manual_item_name'   => $item->manual_item_name,
+                'variant_name'       => $item->productVariant?->variant_name,
+                'sku'                => $item->productVariant?->sku,
+                'is_serialized'      => $item->stockUnits->isNotEmpty(),
+                'tax_type'           => $item->tax_type,
+                'tax_pct'            => (float) $item->tax_pct,
+                'is_margin_scheme'   => (bool) $item->is_margin_scheme,
+                'base_cost'          => (float) $item->base_cost,
+                'landed_cost'        => (float) $item->landed_cost,
+                'tax_amount'         => (float) $item->tax_amount,
+                'discount_amount'    => (float) $item->discount_amount,
+                'line_total'         => (float) $item->line_total,
+                'ordered_qty'        => (int) $item->ordered_qty,
+                'unit_cost'          => (float) $item->unit_cost,
+                'units' => $item->stockUnits->map(fn ($u) => [
+                    'stock_unit_id'      => $u->id,
+                    'status'             => $u->status,
+                    'imei1'              => $u->imei1,
+                    'imei2'              => $u->imei2,
+                    'serial_number'      => $u->serial_number,
+                    'device_condition'   => $u->device_condition ?? 'NEW',
+                    'overall_health'     => $u->overall_health,
+                    'battery_health_pct' => $u->deviceHealth?->battery_health_pct,
+                    'activation_date'    => $u->activation_date?->toDateString(),
+                    'remaining_warranty' => $u->remaining_warranty,
+                    'warranty_expiry_date' => $u->warranty_expiry_date?->toDateString(),
+                    'wholesale_price'    => $u->wholesale_price !== null ? (float) $u->wholesale_price : null,
+                    'selling_price'      => $u->selling_price !== null ? (float) $u->selling_price : null,
+                    'base_cost'          => (float) $u->base_cost,
+                    'landed_cost'        => (float) $u->landed_cost,
+                    'is_margin_scheme'   => (bool) $u->is_margin_scheme,
+                ])->values(),
+                'batches' => $item->stockBatches->map(fn ($b) => [
+                    'stock_batch_id'     => $b->id,
+                    'batch_number'       => $b->batch_number,
+                    'received_qty'       => (int) $b->received_qty,
+                    'remaining_qty'      => (int) $b->remaining_qty,
+                    'base_cost'          => (float) $b->base_cost,
+                    'landed_cost'        => (float) $b->landed_cost,
+                    'is_margin_scheme'   => (bool) $b->is_margin_scheme,
+                    'product_condition'  => $b->product_condition,
+                    'overall_health'     => $b->overall_health,
+                    'remaining_warranty' => $b->remaining_warranty,
+                    'wholesale_price'    => $b->wholesale_price !== null ? (float) $b->wholesale_price : null,
+                    'selling_price'      => $b->selling_price !== null ? (float) $b->selling_price : null,
+                ])->values(),
+            ])->values(),
+        ];
+    }
 
     /**
      * Serialize purchase model for index table.
@@ -263,7 +507,7 @@ class PurchaseEntryController extends Controller
         ];
     }
 
-    private function serializeForShow(PurchaseOrder $po): array
+    private function serializeForShow(PurchaseOrder $po, \App\Models\Store $store): array
     {
         $vendor     = $po->vendor;
         $isSupplier = $vendor instanceof \App\Models\Supplier;
@@ -311,6 +555,11 @@ class PurchaseEntryController extends Controller
             'created_by'            => $po->createdBy?->name,
             'approved_by'           => $po->approvedBy?->name,
             'approved_at'           => $po->approved_at?->toIso8601String(),
+            'revision'              => (int) $po->revision,
+            'revised_at'            => $po->revised_at?->toIso8601String(),
+            'revised_by'            => $po->revisedBy?->name,
+            'revision_reason'       => $po->revision_reason,
+            'mutable'               => $this->mutableFlag($po, $store),
             'vendor'                => $vendor ? [
                 'id'      => $vendor->id,
                 'name'    => $isSupplier ? ($vendor->company_name ?: $vendor->name) : $vendor->name,
@@ -357,6 +606,29 @@ class PurchaseEntryController extends Controller
                     'landed_cost'   => (float) $b->landed_cost,
                 ])->values(),
             ])->values(),
+            'debit_notes' => \App\Models\DebitNote::where('purchase_order_id', $po->id)
+                ->orderBy('debit_note_date', 'desc')
+                ->get(['uuid', 'debit_note_number', 'debit_note_date', 'grand_total', 'reason', 'status'])
+                ->map(fn ($dn) => [
+                    'uuid' => $dn->uuid,
+                    'number' => $dn->debit_note_number,
+                    'date' => $dn->debit_note_date?->toDateString(),
+                    'grand_total' => (float) $dn->grand_total,
+                    'reason' => $dn->reason,
+                    'status' => $dn->status,
+                ])->values(),
+            'payments' => \App\Models\Payment::where('payable_type', \App\Models\PurchaseOrder::class)
+                ->where('payable_id', $po->id)
+                ->where('status', 'completed')
+                ->orderBy('paid_at', 'desc')
+                ->get(['uuid', 'payment_mode', 'amount', 'paid_at', 'txn_reference'])
+                ->map(fn ($p) => [
+                    'uuid' => $p->uuid,
+                    'mode' => $p->payment_mode,
+                    'amount' => (float) $p->amount,
+                    'paid_at' => $p->paid_at?->toDateString(),
+                    'reference' => $p->txn_reference,
+                ])->values(),
         ];
     }
 

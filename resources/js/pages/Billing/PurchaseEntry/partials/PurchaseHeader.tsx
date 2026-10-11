@@ -14,9 +14,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { SearchCommand } from "@/components/special/search-command";
 
-interface Props { onSubmit: (isDraft: boolean) => void; isSubmitting: boolean; }
+interface Props { onSubmit: (isDraft: boolean) => void; isSubmitting: boolean; locked?: boolean; }
 
-export default function PurchaseHeader({ onSubmit, isSubmitting }: Props) {
+export default function PurchaseHeader({ onSubmit, isSubmitting, locked = false }: Props) {
     const { state, dispatch, flags, store } = usePurchase();
     const { can } = usePermissions();
 
@@ -50,10 +50,10 @@ export default function PurchaseHeader({ onSubmit, isSubmitting }: Props) {
                                 <ChevronRight className="size-3 text-muted-foreground/60" />
                                 <Link href={app.purchases.index.url()} className="hover:text-foreground transition-colors">Purchases</Link>
                                 <ChevronRight className="size-3 text-muted-foreground/60" />
-                                <span className="font-semibold text-foreground">New Purchase {flags?.billType === 'po' ? 'Order' : 'Voucher'}</span>
+                                <span className="font-semibold text-foreground">{locked ? "Edit Purchase Order" : <>New Purchase {flags?.billType === 'po' ? 'Order' : 'Voucher'}</>}</span>
                             </nav>
                             <div className="flex items-center space-x-2 mt-0.5">
-                                <h1 className="text-base font-semibold text-foreground leading-tight">Purchase {flags?.billType === 'po' ? 'Order' : 'Voucher'} Entry</h1>
+                                <h1 className="text-base font-semibold text-foreground leading-tight">{locked ? "Purchase Order Revision" : <>Purchase {flags?.billType === 'po' ? 'Order' : 'Voucher'} Entry</>}</h1>
                                 <span className="text-xs text-muted-foreground/40">|</span>
                                 <div
                                     className={`flex items-center space-x-1 text-xs font-medium ${
@@ -69,7 +69,7 @@ export default function PurchaseHeader({ onSubmit, isSubmitting }: Props) {
 
                     <div className="flex items-center space-x-2">
                         <SearchCommand variant="mobile"/>
-                        {store.is_gst_registered && can("profile.manage.gst.status") && (
+                        {store.is_gst_registered && can("profile.manage.gst.status") && !locked && (
                             <div className="flex items-center gap-2 px-3 h-9 rounded-md border border-border bg-muted/20">
                                 <ReceiptText className={cn("size-4", state.storeGstBillToggle ? "text-primary" : "text-muted-foreground")} />
                                 <Label htmlFor="gst-bill-toggle" className="text-xs font-medium cursor-pointer whitespace-nowrap">GST Bill</Label>
@@ -102,11 +102,13 @@ export default function PurchaseHeader({ onSubmit, isSubmitting }: Props) {
                             </SheetContent>
                         </Sheet>
 
-                        <Button type="button" variant="outline" disabled={isSubmitting} onClick={() => onSubmit(true)} title="Save without posting stock">
-                            <Bookmark className="size-4 mr-1.5" /> {isSubmitting ? "Saving..." : "Draft"}
-                        </Button>
-                        <Button type="button" variant="default" disabled={isSubmitting} onClick={() => onSubmit(false)} title="Post stock immediately">
-                            <CheckCircle2 className="size-4 mr-1.5" /> {isSubmitting ? "Posting..." : "Save & Post"}
+                        {!locked && (
+                            <Button type="button" variant="outline" disabled={isSubmitting} onClick={() => onSubmit(true)} title="Save without posting stock">
+                                <Bookmark className="size-4 mr-1.5" /> {isSubmitting ? "Saving..." : "Draft"}
+                            </Button>
+                        )}
+                        <Button type="button" variant="default" disabled={isSubmitting} onClick={() => onSubmit(false)} title={locked ? "Save this revision" : "Post stock immediately"}>
+                            <CheckCircle2 className="size-4 mr-1.5" /> {isSubmitting ? (locked ? "Saving..." : "Posting...") : (locked ? "Save Revision" : "Save & Post")}
                         </Button>
                     </div>
                 </div>

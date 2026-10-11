@@ -78,7 +78,7 @@ class Store extends Model
             'closed_at' => 'datetime',
             'lat' => 'decimal:8',
             'lng' => 'decimal:8',
-            'bank_account_number' => 'encrypted',
+            'bank_account_number' => 'string',
             'security_pin_hash' => 'hashed',
         ];
     }

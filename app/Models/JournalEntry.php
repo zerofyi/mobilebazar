@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
     'entry_date',
     'reference_type',
     'reference_id',
+    'reverses_journal_id',
     'total_debit',
     'total_credit',
     'narration',
@@ -60,5 +61,15 @@ class JournalEntry extends Model
     public function lines(): HasMany
     {
         return $this->hasMany(JournalLine::class);
+    }
+
+    public function reverses(): BelongsTo
+    {
+        return $this->belongsTo(JournalEntry::class, 'reverses_journal_id');
+    }
+
+    public function reversedBy(): HasMany
+    {
+        return $this->hasMany(JournalEntry::class, 'reverses_journal_id');
     }
 }

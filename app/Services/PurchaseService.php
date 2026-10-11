@@ -6,7 +6,10 @@ namespace App\Services;
 
 use App\Exceptions\MonthLockedException;
 use App\Models\Customer;
+use App\Models\DebitNote;
 use App\Models\DeviceHealth;
+use App\Models\JournalEntry;
+use App\Models\Payment;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\StockBatch;
@@ -33,6 +36,7 @@ final class PurchaseService
     public function __construct(
         private readonly PurchaseJournal $journal,
         private readonly SummaryService $summaries,
+        private readonly AccountingService $accounting,
     ) {}
 
     /*
@@ -179,9 +183,778 @@ final class PurchaseService
 
     /*
     |--------------------------------------------------------------------------
-    | Serialized path: stock_units + events + health + snapshot (by unit count)
+    | Edit / Delete — reverse-and-repost (never deltas)
+    |--------------------------------------------------------------------------
+    |
+    | An edit is, inside ONE transaction: (1) reverse the original posting
+    | completely — journals, summaries, stock — using RECORDED allocations,
+    | then (2) re-post the new payload through the same line/journal/summary
+    | code the create path uses, keeping the original PO number. If the new
+    | payload fails anywhere, the whole transaction rolls back and the
+    | original document is byte-identical to before.
+    |
+    | A delete is the same reversal, then the PO row itself is removed.
+    | Journals are NEVER deleted — the reversal entries are the audit trail.
+    |
+    */
+
+    /**
+     * @throws MonthLockedException
+     * @throws \App\Exceptions\AccountingException
+     */
+    public function updatePurchase(Store $store, User $user, PurchaseOrder $po, array $data): PurchaseOrder
+    {
+        $key = (string) $data['idempotency_key'];
+
+        // Fast path: this exact edit was already applied (double-click / retry).
+        $existing = PurchaseOrder::where('store_id', $store->id)
+            ->where('edit_idempotency_key', $key)
+            ->first();
+        if ($existing && $existing->id === $po->id) {
+            return $existing;
+        }
+
+        Log::info('Updating purchase', [
+            'store_id'        => $store->id,
+            'user_id'         => $user->id,
+            'purchase_id'     => $po->id,
+            'po_number'       => $po->po_number,
+            'idempotency_key' => $key,
+            'line_count'      => count($data['lines'] ?? []),
+        ]);
+
+        try {
+            return DB::transaction(function () use ($store, $user, $po, $data, $key) {
+                $po = PurchaseOrder::where('store_id', $store->id)
+                    ->where('id', $po->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                // Replay check under the row lock — closes the double-submit race.
+                if ($po->edit_idempotency_key && hash_equals($po->edit_idempotency_key, $key)) {
+                    return $po;
+                }
+
+                // Row-level guards: locked stock must come back unchanged.
+                // No document-level gate — every purchase is editable.
+                $locked = $this->validateRowGuards($po, $data);
+
+                $newRevision = $po->revision + 1;
+
+                // 1. Reverse financials (journals + summaries). Stock handled selectively below.
+                $this->reverseFinancials($po, $store, $user);
+
+                // 2. Selective stock rebuild: locked rows stay untouched (same IDs),
+                //    editable rows are removed and recreated from the new payload.
+                $snapshots = $this->lockSnapshots($store->id, $data['lines']);
+                $this->rebuildStockSelective($po, $store, $user, $data['lines'], $locked, $snapshots);
+
+                // 3. Update the header. Identity stays: same id, uuid, po_number,
+                //    vendor, order date and type flags. Commercial terms change.
+                //    Revision increments silently — no UI block, no reason required.
+                // Vendor can be changed like in create, or kept as-is.
+                // The journal reposts against the (possibly new) vendor.
+                if (! empty($data['party_id']) && ! empty($data['party_type'])) {
+                    $newVendor = $this->resolveVendor($data);
+                    $po->vendor()->associate($newVendor);
+                }
+
+                $po->update([
+                    'subtotal'             => $this->r2($data['subtotal']),
+                    'tax_amount'           => $this->r2($data['tax_amount']),
+                    'discount_amount'      => $this->r2($data['discount_amount'] ?? 0),
+                    'shipping_charge'      => $this->r2($data['shipping_charge'] ?? 0),
+                    'grand_total'          => $this->r2($data['grand_total']),
+                    'due_amount'           => $this->r2($data['grand_total']) - $this->r2($po->paid_amount),
+                    'payment_status'       => $this->r2($data['grand_total']) <= $this->r2($po->paid_amount) ? 'paid' : ($this->r2($po->paid_amount) > 0 ? 'partial' : 'unpaid'),
+                    'notes'                => $data['notes'] ?? null,
+                    'vendor_invoice_no'    => $data['vendor_invoice_no'] ?? null,
+                    'due_date'             => $data['due_date'] ?? $po->due_date,
+                    'expected_date'        => $data['expected_date'] ?? $po->expected_date,
+                    'revision'             => $newRevision,
+                    'revised_at'           => now(),
+                    'revised_by'           => $user->id,
+                    'edit_idempotency_key' => $key,
+                ]);
+
+                // 4. Journal (suffixed entry numbers — the originals still exist)
+                //    + summaries from the new payload.
+                $this->journal->post($po->fresh(), $store, $user, $data, '-R' . $newRevision);
+                $this->summaries->record(SummaryDeltaFactory::forPurchase($store->id, $data));
+
+                return $po->fresh();
+            }, self::TX_ATTEMPTS);
+        } catch (UniqueConstraintViolationException $e) {
+            $replayed = PurchaseOrder::where('store_id', $store->id)->where('edit_idempotency_key', $key)->first();
+            if ($replayed && $replayed->id === $po->id) {
+                return $replayed;
+            }
+            if ($this->isActiveIdentifierViolation($e)) {
+                throw ValidationException::withMessages([
+                    'lines' => 'A device with this IMEI or serial number is already in active stock. It may have been purchased concurrently — please review and retry.',
+                ]);
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Row-level guards for purchase edit. Returns the locked stock IDs that
+     * must be preserved untouched: ['units' => [...], 'batches' => [...]].
+     *
+     * Rules:
+     * - Serialized unit with status != 'available' (sold/reserved): must be
+     *   present in the payload unchanged (same IMEI/serial/cost). Cannot be
+     *   removed or modified.
+     * - Bulk batch with remaining < received (partially sold): cannot be
+     *   deleted; new qty cannot go below the sold portion; cost cannot change.
+     * - Line deletion: only if zero stock movements on all its units/batches.
+     * - Variant change on a line: only if the line has no stock rows.
+     *
+     * @throws ValidationException (422) on any violation.
+     */
+    private function validateRowGuards(PurchaseOrder $po, array $data): array
+    {
+        $locked = ['units' => [], 'batches' => []];
+        $fail = fn (string $field, string $msg) => throw ValidationException::withMessages([$field => $msg]);
+
+        $po->loadMissing(['items.stockUnits', 'items.stockBatches']);
+
+        // Index payload lines by their existing item id (null = new line).
+        $payloadLines = [];
+        foreach ($data['lines'] ?? [] as $idx => $line) {
+            $itemId = $line['purchase_order_item_id'] ?? null;
+            if ($itemId) {
+                $payloadLines[$itemId] = ['line' => $line, 'idx' => $idx];
+            }
+        }
+
+        foreach ($po->items as $item) {
+            $inPayload = $payloadLines[$item->id] ?? null;
+
+            // Collect locked stock for this line.
+            $lockedUnits = $item->stockUnits->filter(fn ($u) => $u->status !== 'available');
+            $lockedBatches = $item->stockBatches->filter(fn ($b) => $b->remaining_qty < $b->received_qty);
+
+            if (! $inPayload) {
+                // Line deleted — allowed only with zero movements.
+                if ($lockedUnits->isNotEmpty() || $lockedBatches->isNotEmpty()) {
+                    $fail("lines", "Line '{$item->manual_item_name}' cannot be removed: some of its stock has been sold or moved.");
+                }
+                continue;
+            }
+
+            $line = $inPayload['line'];
+            $field = "lines.{$inPayload['idx']}";
+
+            // Variant change — only if no stock rows exist at all.
+            if (($item->stockUnits->isNotEmpty() || $item->stockBatches->isNotEmpty())
+                && (int) ($line['product_variant_id'] ?? 0) !== (int) $item->product_variant_id) {
+                $fail("{$field}.product_variant_id", "Cannot change the product on a line that already has stock. Remove the stock first or create a new line.");
+            }
+
+            // Locked serialized units must come back identical.
+            $payloadUnits = collect($line['units'] ?? [])->keyBy(fn ($u) => $u['stock_unit_id'] ?? 'new_' . ($u['imei1'] ?? $u['serial_number'] ?? uniqid()));
+            foreach ($lockedUnits as $unit) {
+                $locked['units'][] = $unit->id;
+                $pu = $payloadUnits->get($unit->id);
+                if (! $pu) {
+                    $fail("{$field}.units", "IMEI {$unit->imei1} cannot be removed: this unit has been sold or reserved.");
+                }
+                $puImei1 = $pu['imei1'] ?? $pu['imei_1'] ?? '';
+                $puImei2 = $pu['imei2'] ?? $pu['imei_2'] ?? '';
+                if ((string) $puImei1 !== (string) $unit->imei1
+                    || (string) $puImei2 !== (string) $unit->imei2
+                    || (string) ($pu['serial_number'] ?? '') !== (string) $unit->serial_number) {
+                    $fail("{$field}.units", "IMEI {$unit->imei1} cannot be modified: this unit has been sold or reserved.");
+                }
+                $puLanded = (float) ($pu['unit_landed_cost'] ?? $pu['landed_cost'] ?? 0);
+                if (abs($puLanded - (float) $unit->landed_cost) > 0.005) {
+                    $fail("{$field}.units", "Cost of IMEI {$unit->imei1} cannot be changed: this unit has been sold or reserved.");
+                }
+            }
+
+            // Locked batches: qty floor + cost freeze.
+            $payloadBatches = collect($line['batches'] ?? [])->keyBy(fn ($b) => $b['stock_batch_id'] ?? 'new');
+            foreach ($lockedBatches as $batch) {
+                $locked['batches'][] = $batch->id;
+                $pb = $payloadBatches->get($batch->id);
+                if (! $pb) {
+                    $fail("{$field}.batches", "Batch {$batch->batch_number} cannot be removed: some of its stock has been sold.");
+                }
+                $soldQty = $batch->received_qty - $batch->remaining_qty;
+                if ((int) ($pb['quantity'] ?? 0) < $soldQty) {
+                    $fail("{$field}.batches", "Batch {$batch->batch_number}: quantity cannot go below {$soldQty} (already sold).");
+                }
+                if (abs((float) ($pb['landed_cost'] ?? 0) - (float) $batch->landed_cost) > 0.005) {
+                    $fail("{$field}.batches", "Cost of batch {$batch->batch_number} cannot be changed: some of its stock has been sold.");
+                }
+            }
+        }
+
+        return $locked;
+    }
+
+    /**
+     * Reverse journals + summaries only. Stock is handled selectively by
+     * rebuildStockSelective() so locked rows keep their IDs (sale FKs intact).
+     */
+    private function reverseFinancials(PurchaseOrder $po, Store $store, User $user): void
+    {
+        $entries = JournalEntry::where('store_id', $store->id)
+            ->where('reference_type', PurchaseOrder::class)
+            ->where('reference_id', $po->id)
+            ->where('entry_number', 'not like', 'REV-%')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($entries as $entry) {
+            $reversal = $this->accounting->reverse($entry, $user->id, 'Purchase edited', $po->order_date);
+            $reversal->update(['reverses_journal_id' => $entry->id]);
+        }
+
+        $this->summaries->record($this->reversalDelta($po, $store));
+    }
+
+    /**
+     * Selectively rebuild stock: delete editable rows, keep locked rows
+     * untouched, create new rows from the payload (skipping locked IDs).
+     */
+    private function rebuildStockSelective(PurchaseOrder $po, Store $store, User $user, array $lines, array $locked, array $snapshots): void
+    {
+        $po->loadMissing(['items.stockUnits', 'items.stockBatches']);
+
+        $lockedUnitIds = collect($locked['units']);
+        $lockedBatchIds = collect($locked['batches']);
+
+        // Index payload lines by existing item id.
+        $payloadByItem = [];
+        foreach ($lines as $line) {
+            if (! empty($line['purchase_order_item_id'])) {
+                $payloadByItem[$line['purchase_order_item_id']] = $line;
+            }
+        }
+
+        foreach ($po->items as $item) {
+            $payloadLine = $payloadByItem[$item->id] ?? null;
+
+            if (! $payloadLine) {
+                // Deleted line — guards guarantee zero movements.
+                foreach ($item->stockUnits as $unit) {
+                    $this->deleteUnitStock($unit, $store, $snapshots);
+                }
+                foreach ($item->stockBatches as $batch) {
+                    $this->deleteBatchStock($po, $batch, $store, $snapshots);
+                }
+                $item->delete();
+                continue;
+            }
+
+            // Remove editable stock rows; locked rows stay.
+            foreach ($item->stockUnits as $unit) {
+                if (! $lockedUnitIds->contains($unit->id)) {
+                    $this->deleteUnitStock($unit, $store, $snapshots);
+                }
+            }
+            foreach ($item->stockBatches as $batch) {
+                if (! $lockedBatchIds->contains($batch->id)) {
+                    $this->deleteBatchStock($po, $batch, $store, $snapshots);
+                }
+            }
+
+            // Update the item row from the payload (costs may have changed).
+            $item->update([
+                'product_variant_id' => $payloadLine['product_variant_id'] ?? $item->product_variant_id,
+                'manual_item_name'   => $payloadLine['manual_item_name'] ?? $item->manual_item_name,
+                'ordered_qty'        => $payloadLine['quantity'] ?? $item->ordered_qty,
+                'unit_cost'          => $this->r2($payloadLine['unit_cost'] ?? $item->unit_cost),
+                'tax_type'           => $payloadLine['tax_type'] ?? $item->tax_type,
+                'tax_pct'            => $this->r2($payloadLine['tax_pct'] ?? $item->tax_pct),
+                'is_margin_scheme'   => (bool) ($payloadLine['is_margin_scheme'] ?? $item->is_margin_scheme),
+                'base_cost'          => $this->r2($payloadLine['base_cost'] ?? $item->base_cost),
+                'landed_cost'        => $this->r2($payloadLine['landed_cost'] ?? $item->landed_cost),
+                'tax_amount'         => $this->r2($payloadLine['tax_amount'] ?? $item->tax_amount),
+                'discount_amount'    => $this->r2($payloadLine['discount_amount'] ?? 0),
+                'line_total'         => $this->r2($payloadLine['line_total'] ?? $item->line_total),
+            ]);
+
+            // Recreate stock from payload, skipping locked IDs (already in DB).
+            $this->recreateLineStock($po, $item, $store, $payloadLine, $user, $locked, $snapshots);
+        }
+
+        // Brand-new lines.
+        foreach ($lines as $line) {
+            if (! empty($line['purchase_order_item_id'])) {
+                continue;
+            }
+            $item = $po->items()->create([
+                'product_variant_id' => $line['product_variant_id'] ?? null,
+                'manual_item_name'   => $line['manual_item_name'] ?? null,
+                'ordered_qty'        => $line['quantity'] ?? 1,
+                'unit_cost'          => $this->r2($line['unit_cost'] ?? 0),
+                'tax_type'           => $line['tax_type'] ?? 'exclusive',
+                'tax_pct'            => $this->r2($line['tax_pct'] ?? 0),
+                'is_margin_scheme'   => (bool) ($line['is_margin_scheme'] ?? false),
+                'base_cost'          => $this->r2($line['base_cost'] ?? 0),
+                'landed_cost'        => $this->r2($line['landed_cost'] ?? 0),
+                'tax_amount'         => $this->r2($line['tax_amount'] ?? 0),
+                'discount_amount'    => $this->r2($line['discount_amount'] ?? 0),
+                'line_total'         => $this->r2($line['line_total'] ?? 0),
+            ]);
+            $this->recreateLineStock($po, $item, $store, $line, $user, $locked, $snapshots);
+        }
+    }
+
+    /**
+     * Create stock rows for a line from the payload, skipping locked IDs.
+     * For partially-sold batches, adjusts remaining_qty to preserve the sold portion.
+     */
+    private function recreateLineStock(PurchaseOrder $po, PurchaseOrderItem $item, Store $store, array $line, User $user, array $locked, array $snapshots): void
+    {
+        $lockedUnitIds = collect($locked['units']);
+        $lockedBatchIds = collect($locked['batches']);
+
+        if (! empty($line['is_serialized'])) {
+            foreach ($line['units'] ?? [] as $unitData) {
+                if (! empty($unitData['stock_unit_id']) && $lockedUnitIds->contains((int) $unitData['stock_unit_id'])) {
+                    continue; // Locked — already in DB untouched.
+                }
+                $this->createSerializedUnit($po, $item, $store, $unitData, $user, $snapshots);
+            }
+        } else {
+            foreach ($line['batches'] ?? [] as $batchData) {
+                if (! empty($batchData['stock_batch_id']) && $lockedBatchIds->contains((int) $batchData['stock_batch_id'])) {
+                    // Locked batch — adjust remaining to preserve sold qty.
+                    $batch = StockBatch::find($batchData['stock_batch_id']);
+                    if ($batch) {
+                        $soldQty = $batch->received_qty - $batch->remaining_qty;
+                        $newReceived = (int) ($batchData['quantity'] ?? $batch->received_qty);
+                        $batch->update([
+                            'received_qty'  => $newReceived,
+                            'remaining_qty' => $newReceived - $soldQty,
+                        ]);
+                    }
+                    continue;
+                }
+                $this->createBulkBatch($po, $item, $store, $batchData, $user, $snapshots);
+            }
+            // Back-compat: single-quantity bulk line without explicit batches.
+            if (empty($line['batches'])) {
+                $this->createBulkBatch($po, $item, $store, $line, $user, $snapshots);
+            }
+        }
+    }
+
+    public function deletePurchase(Store $store, User $user, PurchaseOrder $po): void
+    {
+        Log::info('Deleting purchase', [
+            'store_id'    => $store->id,
+            'user_id'     => $user->id,
+            'purchase_id' => $po->id,
+            'po_number'   => $po->po_number,
+        ]);
+
+        DB::transaction(function () use ($store, $user, $po) {
+            $po = PurchaseOrder::where('store_id', $store->id)
+                ->where('id', $po->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            // Only guard: cannot delete if any stock has been sold or moved.
+            // (Payments/debit notes/month locks no longer block — every record is deletable otherwise.)
+            $po->loadMissing(['items.stockUnits', 'items.stockBatches']);
+            foreach ($po->items as $item) {
+                $movedUnits = $item->stockUnits->filter(fn ($u) => $u->status !== 'available');
+                $movedBatches = $item->stockBatches->filter(fn ($b) => $b->remaining_qty < $b->received_qty);
+                if ($movedUnits->isNotEmpty() || $movedBatches->isNotEmpty()) {
+                    throw ValidationException::withMessages([
+                        'purchase' => 'Cannot delete this purchase: some of its stock has been sold or moved.',
+                    ]);
+                }
+            }
+
+            $this->reversePurchase($po, $store, $user, 'Purchase deleted');
+
+            $po->delete();
+        }, self::TX_ATTEMPTS);
+    }
+
+    /**
+     * Hard-delete a DRAFT. Drafts never posted anything — no journals, no
+     * summaries, no stock — so this is just items + header. This resolves the
+     * orphan `purchases.purge` route (which 500s today) with defined behavior.
+     */
+    public function purgeDraft(Store $store, PurchaseOrder $po): void
+    {
+        DB::transaction(function () use ($store, $po) {
+            $po = PurchaseOrder::where('store_id', $store->id)
+                ->where('id', $po->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($po->status !== 'draft') {
+                throw ValidationException::withMessages([
+                    'purchase' => 'Only drafts can be purged. Posted purchases must be deleted through the reversal flow.',
+                ]);
+            }
+
+            $po->items()->delete();
+            $po->delete();
+        }, self::TX_ATTEMPTS);
+    }
+
+    /**
+     * Changing the party, date, store or tax flags is a different commercial
+     * event — the sanctioned path is cancel + recreate, not edit.
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    private function assertImmutableFields(PurchaseOrder $po, array $data): void
+    {
+        $fail = fn (string $field) => throw ValidationException::withMessages([
+            $field => "The {$field} cannot be changed on a posted purchase. Cancel and recreate instead.",
+        ]);
+
+        if (Carbon::parse($data['order_date'])->format('Y-m-d') !== $po->order_date->format('Y-m-d')) {
+            $fail('order_date');
+        }
+
+        $vendorType = $data['party_type'] === 'supplier' ? Supplier::class : Customer::class;
+        if ($po->vendor_type !== $vendorType || (int) $po->vendor_id !== (int) $data['party_id']) {
+            $fail('party_id');
+        }
+
+        foreach (['bill_type', 'type'] as $field) {
+            if ((string) $po->{$field} !== (string) $data[$field]) {
+                $fail($field);
+            }
+        }
+
+        foreach (['is_gst_billed', 'is_intra_state'] as $field) {
+            if ((bool) $po->{$field} !== (bool) $data[$field]) {
+                $fail($field);
+            }
+        }
+
+        if (! empty($data['is_draft'])) {
+            throw ValidationException::withMessages([
+                'is_draft' => 'A posted purchase cannot be converted back to a draft.',
+            ]);
+        }
+    }
+
+    /**
+     * Reverse a posted purchase completely, inside the caller's transaction.
+     * Driven by RECORDED allocations — nothing is recomputed.
+     */
+    private function reversePurchase(PurchaseOrder $po, Store $store, User $user, string $reason): void
+    {
+        // 1. Journals — the originals stay; REV- mirror entries are posted.
+        //    Dated at the PO's order date so the reversal lands in the same period.
+        $entries = JournalEntry::where('store_id', $store->id)
+            ->where('reference_type', PurchaseOrder::class)
+            ->where('reference_id', $po->id)
+            ->where('entry_number', 'not like', 'REV-%')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($entries as $entry) {
+            $reversal = $this->accounting->reverse($entry, $user->id, $reason, $po->order_date);
+            $reversal->update(['reverses_journal_id' => $entry->id]);
+        }
+
+        // 2. Summaries — rebuild the create-shaped payload from recorded rows,
+        //    then record its negation.
+        $this->summaries->record($this->reversalDelta($po, $store));
+
+        // 3. Stock — lock every touched snapshot row up-front (ascending id),
+        //    then remove exactly what this purchase created.
+        $items = $po->items()->with(['stockUnits:id,purchase_order_item_id,device_condition', 'stockBatches'])->lockForUpdate()->get();
+
+        $variantIds = $items->pluck('product_variant_id')->filter()->unique()->sort()->values();
+        $snapshots  = [];
+        foreach ($variantIds as $variantId) {
+            $snapshots[$variantId] = StockSnapshot::where('store_id', $store->id)
+                ->where('product_variant_id', $variantId)
+                ->lockForUpdate()
+                ->firstOrFail();
+        }
+
+        foreach ($items as $item) {
+            $this->reverseSerializedStock($item, $store, $user, $snapshots);
+            $this->reverseBatchStock($po, $item, $store, $user, $snapshots);
+            $item->delete();
+        }
+    }
+
+    /**
+     * The summary delta that exactly negates this PO's original posting,
+     * rebuilt from the recorded item/unit rows.
+     */
+    private function reversalDelta(PurchaseOrder $po, Store $store): \App\DTOs\SummaryDelta
+    {
+        $lines = [];
+
+        foreach ($po->items as $item) {
+            $units = $item->stockUnits;
+            if ($units->isNotEmpty()) {
+                $lines[] = [
+                    'is_serialized' => true,
+                    'line_total'    => (float) $item->line_total,
+                    'units'         => $units
+                        ->map(fn ($u) => ['device_condition_code' => $u->device_condition])
+                        ->all(),
+                ];
+            } else {
+                $lines[] = [
+                    'is_serialized' => false,
+                    'line_total'    => (float) $item->line_total,
+                    'ordered_qty'   => (int) $item->ordered_qty,
+                ];
+            }
+        }
+
+        return SummaryDeltaFactory::forPurchase($store->id, [
+            'lines'       => $lines,
+            'grand_total' => (float) $po->grand_total,
+            'order_date'  => $po->order_date->format('Y-m-d'),
+        ])->reversed();
+    }
+
+    /**
+     * Remove the serialized units this purchase created. The gate guarantees
+     * every one is still 'available'.
+     */
+    private function reverseSerializedStock(PurchaseOrderItem $item, Store $store, User $user, array $snapshots): void
+    {
+        $units = StockUnit::where('purchase_order_item_id', $item->id)->lockForUpdate()->get();
+        $count = $units->count();
+
+        foreach ($units as $unit) {
+            $unit->deviceHealth?->delete();
+            $unit->events()->delete();
+            $unit->delete();
+        }
+
+        if ($count > 0 && $item->product_variant_id && isset($snapshots[$item->product_variant_id])) {
+            $this->applyToSnapshot($snapshots[$item->product_variant_id], -$count, null, null);
+        }
+    }
+
+    /**
+     * Remove the batches this purchase created. The gate guarantees
+     * remaining_qty == received_qty on every one. A compensating ledger
+     * entry keeps the stock audit trail complete.
+     */
+    private function reverseBatchStock(PurchaseOrder $po, PurchaseOrderItem $item, Store $store, User $user, array $snapshots): void
+    {
+        $batches = StockBatch::where('purchase_order_item_id', $item->id)->lockForUpdate()->get();
+
+        foreach ($batches as $batch) {
+            $qty = (int) $batch->received_qty;
+            $ledgerId = null;
+
+            if ($item->product_variant_id && isset($snapshots[$item->product_variant_id])) {
+                $snapshot      = $snapshots[$item->product_variant_id];
+                $balanceBefore = (int) $snapshot->quantity_on_hand;
+
+                $ledger = StockLedger::create([
+                    'idempotency_key'    => $po->uuid . ':rev:item:' . $item->id . ':batch:' . $batch->id,
+                    'store_id'           => $store->id,
+                    'product_variant_id' => $item->product_variant_id,
+                    'stock_batch_id'     => $batch->id,
+                    'transaction_type'   => 'purchase_reversal',
+                    'quantity_delta'     => -$qty,
+                    'balance_after'      => $balanceBefore - $qty,
+                    'base_cost'          => $batch->base_cost,
+                    'landed_cost'        => $batch->landed_cost,
+                    'reference_type'     => PurchaseOrderItem::class,
+                    'reference_id'       => $item->id,
+                    'created_by'         => $user->id,
+                ]);
+                $ledgerId = $ledger->id;
+
+                $this->applyToSnapshot($snapshot, -$qty, $ledgerId, null);
+            }
+
+            $batch->delete();
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    /*
+    |--------------------------------------------------------------------------
+    | Selective stock helpers for purchase edit (row-level guards)
     |--------------------------------------------------------------------------
     */
+
+    /**
+     * Delete a single editable unit + its health/events, adjusting snapshot.
+     */
+    private function deleteUnitStock(StockUnit $unit, Store $store, array $snapshots): void
+    {
+        $unit->deviceHealth?->delete();
+        $unit->events()->delete();
+        $variantId = $unit->product_variant_id;
+        $unit->delete();
+
+        if ($variantId && isset($snapshots[$variantId])) {
+            $this->applyToSnapshot($snapshots[$variantId], -1, null, null);
+        }
+    }
+
+    /**
+     * Delete a single editable batch + compensating ledger entry.
+     */
+    private function deleteBatchStock(PurchaseOrder $po, StockBatch $batch, Store $store, array $snapshots): void
+    {
+        $qty = (int) $batch->received_qty;
+        $variantId = $batch->product_variant_id;
+        $itemId = $batch->purchase_order_item_id;
+        $ledgerId = null;
+
+        if ($variantId && isset($snapshots[$variantId])) {
+            $snapshot      = $snapshots[$variantId];
+            $balanceBefore = (int) $snapshot->quantity_on_hand;
+
+            $ledger = StockLedger::create([
+                'idempotency_key'    => $po->uuid . ':editrev:batch:' . $batch->id . ':' . time(),
+                'store_id'           => $store->id,
+                'product_variant_id' => $variantId,
+                'stock_batch_id'     => $batch->id,
+                'transaction_type'   => 'purchase_reversal',
+                'quantity_delta'     => -$qty,
+                'balance_after'      => $balanceBefore - $qty,
+                'base_cost'          => $batch->base_cost,
+                'landed_cost'        => $batch->landed_cost,
+                'reference_type'     => PurchaseOrderItem::class,
+                'reference_id'       => $itemId,
+                'created_by'         => auth()->id(),
+            ]);
+            $ledgerId = $ledger->id;
+
+            $this->applyToSnapshot($snapshot, -$qty, $ledgerId, null);
+        }
+
+        $batch->delete();
+    }
+
+    /**
+     * Create a single serialized unit from payload data (edit path).
+     */
+    private function createSerializedUnit(PurchaseOrder $po, PurchaseOrderItem $item, Store $store, array $unitData, User $user, array $snapshots): void
+    {
+        $variantId  = $item->product_variant_id;
+        $manualName = $item->manual_item_name;
+
+        [$activationDate, $warrantyExpiryDate, $remainingWarranty] = $this->warrantyFields($unitData);
+
+        $unit = StockUnit::create([
+            'uuid'                   => Str::uuid()->toString(),
+            'store_id'               => $store->id,
+            'product_variant_id'     => $variantId,
+            'manual_item_name'       => $manualName,
+            'imei1'                  => $this->blankToNull($unitData['imei1'] ?? $unitData['imei_1'] ?? null),
+            'imei2'                  => $this->blankToNull($unitData['imei2'] ?? $unitData['imei_2'] ?? null),
+            'serial_number'          => $this->blankToNull($unitData['serial_number'] ?? null),
+            'device_condition'       => strtoupper(trim((string) ($unitData['device_condition_code'] ?? 'NEW'))),
+            'overall_health'         => $this->blankToNull($unitData['overall_health'] ?? null),
+            'is_saleable'            => true,
+            'status'                 => 'available',
+            'base_cost'              => $this->r2($unitData['unit_base_cost'] ?? $unitData['base_cost'] ?? 0),
+            'landed_cost'            => $this->r2($unitData['unit_landed_cost'] ?? $unitData['landed_cost'] ?? 0),
+            'wholesale_price'        => $this->positiveOrNull($unitData['wholesale_price'] ?? null),
+            'selling_price'          => $this->positiveOrNull($unitData['selling_price'] ?? null),
+            'is_margin_scheme'       => (bool) ($unitData['is_margin_scheme'] ?? $item->is_margin_scheme),
+            'purchase_order_id'      => $po->id,
+            'purchase_order_item_id' => $item->id,
+            'activation_date'        => $activationDate,
+            'warranty_expiry_date'   => $warrantyExpiryDate,
+            'remaining_warranty'     => $remainingWarranty,
+        ]);
+
+        if (isset($unitData['battery_health_pct'])) {
+            $health = DeviceHealth::create([
+                'stock_unit_id'      => $unit->id,
+                'battery_health_pct' => (int) $unitData['battery_health_pct'],
+                'checked_by'         => $user->id,
+                'checked_at'         => now(),
+            ]);
+
+            $unit->update(['health_id' => $health->id]);
+        }
+
+        $event = StockUnitEvent::create([
+            'stock_unit_id'  => $unit->id,
+            'store_id'       => $store->id,
+            'event_type'     => 'purchased',
+            'reference_type' => PurchaseOrderItem::class,
+            'reference_id'   => $item->id,
+            'created_by'     => $user->id,
+        ]);
+
+        if ($variantId && isset($snapshots[$variantId])) {
+            $this->applyToSnapshot($snapshots[$variantId], 1, null, $event->id);
+        }
+    }
+
+    /**
+     * Create a single bulk batch from payload data (edit path).
+     */
+    private function createBulkBatch(PurchaseOrder $po, PurchaseOrderItem $item, Store $store, array $batchData, User $user, array $snapshots): void
+    {
+        $variantId  = $item->product_variant_id;
+        $manualName = $item->manual_item_name;
+        $qty        = max(1, (int) ($batchData['quantity'] ?? $batchData['ordered_qty'] ?? 1));
+
+        $batch = StockBatch::create([
+            'uuid'                   => Str::uuid()->toString(),
+            'store_id'               => $store->id,
+            'product_variant_id'     => $variantId,
+            'manual_item_name'       => $manualName,
+            'batch_number'           => $this->makeBatchNumber($store->id),
+            'purchase_order_id'      => $po->id,
+            'purchase_order_item_id' => $item->id,
+            'received_qty'           => $qty,
+            'remaining_qty'          => $qty,
+            'base_cost'              => $this->r2($batchData['base_cost'] ?? $item->base_cost),
+            'landed_cost'            => $this->r2($batchData['landed_cost'] ?? $item->landed_cost),
+            'is_margin_scheme'       => (bool) ($batchData['is_margin_scheme'] ?? $item->is_margin_scheme),
+            'product_condition'      => strtolower(trim((string) ($batchData['condition_code'] ?? 'new'))),
+            'overall_health'         => $this->blankToNull($batchData['overall_health'] ?? null),
+            'remaining_warranty'     => $this->blankToNull($batchData['remaining_warranty'] ?? null),
+            'wholesale_price'        => $this->positiveOrNull($batchData['wholesale_price'] ?? null),
+            'selling_price'          => $this->positiveOrNull($batchData['selling_price'] ?? null),
+        ]);
+
+        if (! $variantId || ! isset($snapshots[$variantId])) {
+            return;
+        }
+
+        $snapshot      = $snapshots[$variantId];
+        $balanceBefore = (int) $snapshot->quantity_on_hand;
+
+        $ledger = StockLedger::create([
+            'idempotency_key'    => $po->uuid . ':edit:item:' . $item->id . ':batch:' . $batch->id,
+            'store_id'           => $store->id,
+            'product_variant_id' => $variantId,
+            'stock_batch_id'     => $batch->id,
+            'transaction_type'   => 'purchase',
+            'quantity_delta'     => $qty,
+            'balance_after'      => $balanceBefore + $qty,
+            'base_cost'          => $batch->base_cost,
+            'landed_cost'        => $batch->landed_cost,
+            'reference_type'     => PurchaseOrderItem::class,
+            'reference_id'       => $item->id,
+            'created_by'         => $user->id,
+        ]);
+
+        $this->applyToSnapshot($snapshot, $qty, $ledger->id, null);
+    }
+
+    // | Serialized path: stock_units + events + health + snapshot (by unit count)
+
     private function processSerializedLine(
         PurchaseOrder $po,
         Store $store,

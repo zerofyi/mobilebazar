@@ -15,7 +15,7 @@ function partyAddressText(p: Party): string | null {
     return null;
 }
 
-export default function VendorAndDocMeta() {
+export default function VendorAndDocMeta({ locked = false, vendorLocked = locked }: { locked?: boolean; vendorLocked?: boolean }) {
     const { state, dispatch, flags, store } = usePurchase();
     const { partyType, selectedParty, taxMovement, poNumber, vendorInvoiceNo, orderDate } = state;
     const { query, setQuery, results, loading, clear } = usePartySearch(partyType);
@@ -52,6 +52,7 @@ export default function VendorAndDocMeta() {
         <div className="w-full">
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 px-4">
                 <div className="grid grid-cols-1 gap-2.5 content-start">
+                    {!vendorLocked && (
                     <div className="flex items-center gap-2">
                         <div className="flex items-center border border-border rounded-md bg-muted/40 shrink-0" role="group" aria-label="Party type">
                             {(["customer", "supplier"] as const).map((t) => (
@@ -90,13 +91,14 @@ export default function VendorAndDocMeta() {
                             )}
                         </div>
                     </div>
+                    )}
 
                     {selectedParty ? (
                         <div className="relative rounded-lg border bg-card p-3 shadow-2xs">
                             <div className="absolute right-3 top-3 flex items-center gap-1.5">
                                 <Badge variant="secondary" className="gap-1 text-[10px] font-normal capitalize">{partyType === "supplier" ? <Building2 className="size-3" /> : <UserRound className="size-3" />} {partyType}</Badge>
                                 {(selectedParty.gstin || selectedParty.is_verified) && <Badge variant="outline" className="gap-1 border-emerald-500/30 bg-emerald-50 text-[10px] text-emerald-700 font-normal"><BadgeCheck className="size-3" /> {selectedParty.gstin ? "GST" : "KYC"}</Badge>}
-                                <button type="button" onClick={() => dispatch({ type: "SET_PARTY", payload: { party: null } })} className="ml-1 text-muted-foreground hover:text-destructive"><X className="size-3.5" /></button>
+                                {!vendorLocked && <button type="button" onClick={() => dispatch({ type: "SET_PARTY", payload: { party: null } })} className="ml-1 text-muted-foreground hover:text-destructive"><X className="size-3.5" /></button>}
                             </div>
                             <div className="flex items-start gap-3 pr-28">
                                 <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted/60 border">{partyType === "supplier" ? <Building2 className="size-4 text-muted-foreground" /> : <UserRound className="size-4 text-muted-foreground" />}</div>
@@ -135,8 +137,8 @@ export default function VendorAndDocMeta() {
                         <div className="mt-2.5 grid grid-cols-2 gap-2 border-t pt-2">
                             <div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">Purchase No.</p><Input name="po_number" className="mt-0.5 h-7 text-xs bg-muted/30 font-mono" value={poNumber} readOnly /></div>
                             <div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">Vendor Invoice</p><Input className="mt-0.5 h-7 text-xs" value={vendorInvoiceNo} onChange={(e) => dispatch({ type: "SET_VENDOR_INVOICE", payload: e.target.value })} placeholder="Invoice number" /></div>
-                            <div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">Purchase Date</p><Input type="date" className="mt-0.5 h-7 text-xs" value={orderDate} onChange={(e) => dispatch({ type: "SET_ORDER_DATE", payload: e.target.value })} /></div>
-                            {flags.isGstBilled && <div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">Tax Movement</p><div className="mt-0.5 flex h-7 items-center rounded-md border bg-muted/30">{(["intra", "inter"] as const).map((m) => (<Button key={m} type="button" variant={taxMovement === m ? "outline" : "ghost"} size="sm" aria-pressed={taxMovement === m} onClick={() => dispatch({ type: "SET_TAX_MOVEMENT", payload: m })} className={cn("h-6 flex-1 px-1.5 text-[10px] rounded-md", taxMovement === m ? "bg-background shadow-2xs font-semibold" : "text-muted-foreground")}>{m === "intra" ? "CGST+SGST" : "IGST"}</Button>))}</div></div>}
+                            <div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">Purchase Date</p><Input type="date" className="mt-0.5 h-7 text-xs" value={orderDate} disabled={locked} onChange={(e) => dispatch({ type: "SET_ORDER_DATE", payload: e.target.value })} /></div>
+                            {flags.isGstBilled && <div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">Tax Movement</p><div className="mt-0.5 flex h-7 items-center rounded-md border bg-muted/30">{(["intra", "inter"] as const).map((m) => (<Button key={m} type="button" variant={taxMovement === m ? "outline" : "ghost"} size="sm" aria-pressed={taxMovement === m} disabled={locked} onClick={() => dispatch({ type: "SET_TAX_MOVEMENT", payload: m })} className={cn("h-6 flex-1 px-1.5 text-[10px] rounded-md", taxMovement === m ? "bg-background shadow-2xs font-semibold" : "text-muted-foreground")}>{m === "intra" ? "CGST+SGST" : "IGST"}</Button>))}</div></div>}
                         </div>
                         <div className="flex items-center justify-between border-t pt-2 mt-2"><span className="text-[10px] text-muted-foreground">Store GST State</span><span className="text-[11px] font-semibold">{store.address?.state || "—"}</span></div>
                     </div>

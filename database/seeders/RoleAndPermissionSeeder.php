@@ -29,9 +29,12 @@ class RoleAndPermissionSeeder extends Seeder
 
             'purchases.index', 'purchases.view', 'purchases.create', 'purchases.update', 'purchases.delete', 'purchases.purge',
 
+            'supplier-payments.index', 'supplier-payments.view', 'supplier-payments.create',
+            'debit-notes.index', 'debit-notes.view', 'debit-notes.create',
+
             'sales.index', 'sales.view', 'sales.create', 'sales.update', 'sales.delete', 'sales.purge',
 
-            'loans.index', 'loans.view', 'loans.create',
+            'loans.index', 'loans.view', 'loans.create', 'loans.update', 'loans.delete',
             'installments.index', 'installments.view',
 
             'profile.manage.gst.status',
@@ -49,9 +52,11 @@ class RoleAndPermissionSeeder extends Seeder
             'customers.index', 'customers.view', 'customers.create', 'customers.update',
 
             'purchases.index', 'purchases.view', 'purchases.create', 'purchases.update', 'purchases.delete',
+            'supplier-payments.index', 'supplier-payments.view', 'supplier-payments.create',
+            'debit-notes.index', 'debit-notes.view', 'debit-notes.create',
             'sales.index', 'sales.view', 'sales.create', 'sales.update', 'sales.delete',
 
-            'loans.index', 'loans.view', 'loans.create',
+            'loans.index', 'loans.view', 'loans.create', 'loans.update', 'loans.delete',
             'installments.index', 'installments.view',
 
             // Add new permissions here line-by-line during dev/production deployments

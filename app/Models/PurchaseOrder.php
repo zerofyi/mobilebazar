@@ -47,6 +47,11 @@ use Zerofyi\Media\Traits\HasAssets;
     'approved_by',
     'approved_at',
     'idempotency_key',
+    'revision',
+    'revised_at',
+    'revised_by',
+    'revision_reason',
+    'edit_idempotency_key',
 ])]
 class PurchaseOrder extends Model
 {
@@ -73,6 +78,8 @@ class PurchaseOrder extends Model
             'grand_total' => 'decimal:2',
             'paid_amount' => 'decimal:2',
             'due_amount' => 'decimal:2',
+            'revision' => 'integer',
+            'revised_at' => 'datetime',
         ];
     }
 
@@ -103,6 +110,11 @@ class PurchaseOrder extends Model
     public function approvedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    public function revisedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'revised_by');
     }
 
     public function items(): HasMany

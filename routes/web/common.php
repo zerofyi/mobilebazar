@@ -10,11 +10,14 @@ use App\Http\Controllers\FinancerController;
 use App\Http\Controllers\InstallmentController;
 use App\Http\Controllers\LoanController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\DebitNoteController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseEntryController;
+use App\Http\Controllers\PurchaseReportController;
 use App\Http\Controllers\SaleEntryController;
 use App\Http\Controllers\StoreController;
 use App\Http\Controllers\SupplierController;
+use App\Http\Controllers\SupplierPaymentController;
 
 Route::prefix('app')->middleware(['auth', 'verified', 'check'])
     ->name('app.')->group(function () {
@@ -142,6 +145,26 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::delete('/{purchase}', [PurchaseEntryController::class, 'destroy'])->name('destroy');
     });
 
+    Route::prefix('debit-notes')->name('debit-notes.')->group(function () {
+        // 1. Static routes (No parameters)
+        Route::get('/', [DebitNoteController::class, 'index'])->name('index');
+        Route::get('/create', [DebitNoteController::class, 'create'])->name('create');
+        Route::post('/', [DebitNoteController::class, 'store'])->name('store');
+
+        // 2. JSON endpoints for the Create page — static, BEFORE the wildcard
+        Route::get('/purchases/search', [DebitNoteController::class, 'searchPurchases'])->name('purchases.search');
+        Route::get('/purchase-stock/{purchase}', [DebitNoteController::class, 'purchaseStock'])->name('purchase-stock');
+
+        // 3. Detail
+        Route::get('/{debit_note}', [DebitNoteController::class, 'show'])->name('show');
+    });
+
+    Route::prefix('reports/purchases')->name('reports.purchases.')->group(function () {
+        Route::get('/register', [PurchaseReportController::class, 'register'])->name('register');
+        Route::get('/item-history', [PurchaseReportController::class, 'itemHistory'])->name('itemHistory');
+        Route::get('/payables', [PurchaseReportController::class, 'payables'])->name('payables');
+    });
+
     Route::prefix('sales')->name('sales.')->group(function () {
         // 1. Static routes (No parameters)
         Route::get('/', [SaleEntryController::class, 'index'])->name('index');
@@ -160,11 +183,26 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::delete('/{sale}', [SaleEntryController::class, 'destroy'])->name('destroy');
     });
 
-    // ── Loans (posted loans are immutable: no edit/update/destroy) ──
+    // ── Supplier payments ──
+    Route::prefix('supplier-payments')->name('supplier-payments.')->group(function () {
+        // 1. Static routes (No parameters)
+        Route::get('/', [SupplierPaymentController::class, 'index'])->name('index');
+        Route::get('/create', [SupplierPaymentController::class, 'create'])->name('create');
+        Route::post('/', [SupplierPaymentController::class, 'store'])->name('store');
+    });
+
+    // Per-supplier outstanding dues. Kept out of the `suppliers` group so it can
+    // never be shadowed by the `/{supplier}` show route (a single-segment route
+    // can't match this two-segment URL anyway).
+    Route::get('/suppliers/{supplier}/outstanding', [SupplierPaymentController::class, 'outstanding'])
+        ->name('suppliers.outstanding');
+
+    // ── Loans (editable/deletable only while pristine — see LoanService::assertMutable) ──
     Route::prefix('loans')->name('loans.')->group(function () {
         // 1. Static routes (No parameters)
         Route::get('/', [LoanController::class, 'index'])->name('index');
         Route::get('/create', [LoanController::class, 'create'])->name('create');
+        Route::get('/invoice-lookup', [LoanController::class, 'lookupInvoice'])->name('invoice-lookup');
         Route::post('/preview-schedule', [LoanController::class, 'preview'])->name('preview-schedule');
         Route::post('/', [LoanController::class, 'store'])->name('store');
 
@@ -175,6 +213,10 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::post('/{loan}/upload-agreement', [LoanController::class, 'upload'])->name('agreement.upload');
         Route::post('/{loan}/visits', [LoanController::class, 'logVisit'])->name('visits.store');
         Route::post('/{loan}/kyc', [LoanController::class, 'uploadKyc'])->name('kyc.upload');
+        Route::get('/{loan}/edit', [LoanController::class, 'edit'])->name('edit');
+        Route::put('/{loan}', [LoanController::class, 'update'])->name('update');
+        // Delete is PIN-gated: 5 attempts/minute makes a 4-digit PIN unbruteforceable.
+        Route::delete('/{loan}', [LoanController::class, 'destroy'])->name('destroy')->middleware('throttle:5,1');
 
         // 3. Detail
         Route::get('/{loan}', [LoanController::class, 'show'])->name('show');

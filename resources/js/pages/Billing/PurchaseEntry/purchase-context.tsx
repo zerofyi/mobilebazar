@@ -60,6 +60,12 @@ export interface LineRow {
     warrantyMode: WarrantyMode; warrantyValue: string; qty: number;
     cost: number; discPercent: number; taxMode: TaxMode; taxPercent: number;
     wholesale: number; selling: number;
+    // Edit-mode row identity for row-level guards (undefined on create).
+    purchase_order_item_id?: number | null;
+    stock_unit_id?: number | null;
+    unit_status?: string | null;
+    stock_batch_id?: number | null;
+    batch_remaining_qty?: number | null;
 }
 
 interface PurchaseState {
@@ -252,6 +258,7 @@ export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendor
         const snapName = first.manual_item_name || first.name;
 
         return {
+            purchase_order_item_id: first.purchase_order_item_id ?? null,
             product_variant_id: first.product_variant_id,
             manual_item_name: snapName,
             is_serialized: first.is_serialized,
@@ -279,6 +286,7 @@ export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendor
                 const c = evalLineCost(r, flags, vendorIsRegistered, hasParty);
                 const bh = parseInt(r.batteryHealth, 10);
                 return {
+                    stock_unit_id: r.stock_unit_id ?? null,
                     imei1: r.imei1.trim() || null, imei2: r.imei2.trim() || null, serial_number: r.serial.trim() || null,
                     device_condition_id: r.condition_id, device_condition_code: r.condition,
                     overall_health: r.quality.trim() || null, battery_health_pct: Number.isFinite(bh) ? Math.min(100, Math.max(0, bh)) : null,
@@ -287,6 +295,13 @@ export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendor
                     wholesale_price: r.wholesale, selling_price: r.selling, is_margin_scheme: c.isMarginLine,
                 };
             }),
+            // Bulk batches with their IDs for row-level guards (edit mode).
+            batches: first.is_serialized ? [] : group.map((r) => ({
+                stock_batch_id: r.stock_batch_id ?? null,
+                quantity: r.qty,
+                base_cost: round2(evalLineCost(r, flags, vendorIsRegistered, hasParty).baseCost),
+                landed_cost: round2(evalLineCost(r, flags, vendorIsRegistered, hasParty).landedCost),
+            })),
         };
     });
 }
