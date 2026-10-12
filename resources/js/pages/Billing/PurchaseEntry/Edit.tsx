@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Head, router } from "@inertiajs/react";
 import PurchaseHeader from "./partials/PurchaseHeader";
+import SecurityPinModal from "@/components/SecurityPinModal";
 import VendorAndDocMeta from "./partials/VendorAndDocMeta";
 import LineItemTable from "./partials/LineItemTable";
 import PurchaseSummaryFooter from "./partials/PurchaseSummaryFooter";
@@ -35,7 +36,7 @@ interface EditBatch {
 interface EditLine {
     purchase_order_item_id: number | null;
     product_variant_id: number | null; manual_item_name: string | null; variant_name: string | null;
-    sku: string | null; is_serialized: boolean; tax_type: string | null; tax_pct: number;
+    sku: string | null; is_serialized: boolean; tax_type: string | null; tax_pct: number; variant_tax_pct?: number | null;
     is_margin_scheme: boolean; base_cost: number; landed_cost: number; tax_amount: number;
     discount_amount: number; line_total: number; ordered_qty: number; unit_cost: number;
     units: EditUnit[]; batches: EditBatch[];
@@ -79,7 +80,7 @@ function generateUuid(): string {
 }
 
 function conditionId(deviceConditions: DeviceConditionOption[], code: string | null): number | null {
-    return deviceConditions.find((d) => d.code === (code ?? "NEW"))?.id ?? null;
+    return deviceConditions.find((d) => d.code.toUpperCase() === (code ?? "NEW").toUpperCase())?.id ?? null;
 }
 
 /**
@@ -97,7 +98,7 @@ function detectWarranty(u: { activation_date?: string | null; warranty_expiry_da
 function buildRows(purchase: EditPurchase, deviceConditions: DeviceConditionOption[]): LineRow[] {
     const rows: LineRow[] = [];
     purchase.lines.forEach((item, li) => {
-        const name = item.variant_name ?? item.manual_item_name ?? "";
+        const name = item.manual_item_name ?? item.variant_name ?? "";
         const taxMode = item.tax_type === "inclusive" ? "I" : "E";
 
         if (item.is_serialized && item.units.length > 0) {
@@ -128,7 +129,7 @@ function buildRows(purchase: EditPurchase, deviceConditions: DeviceConditionOpti
                     cost,
                     discPercent: cost > 0 ? (perUnitDiscount / cost) * 100 : 0,
                     taxMode,
-                    taxPercent: item.tax_pct,
+                    taxPercent: item.is_margin_scheme ? (item.variant_tax_pct ?? item.tax_pct) : item.tax_pct,
                     wholesale: u.wholesale_price ?? 0,
                     selling: u.selling_price ?? 0,
                 });
@@ -136,12 +137,13 @@ function buildRows(purchase: EditPurchase, deviceConditions: DeviceConditionOpti
         } else if (!item.is_serialized && item.batches.length > 0) {
             const perUnitDiscount = item.discount_amount / Math.max(1, item.ordered_qty);
             item.batches.forEach((b, bi) => {
-                const cost = b.base_cost + perUnitDiscount;
+                const cost = (item.tax_type === "exclusive" ? b.base_cost : b.landed_cost) + perUnitDiscount;
                 rows.push({
                     id: `edit-b-${li}-${bi}`,
                     purchase_order_item_id: item.purchase_order_item_id ?? null,
                     stock_batch_id: b.stock_batch_id ?? null,
                     batch_remaining_qty: b.remaining_qty ?? null,
+                    batch_received_qty: b.received_qty,
                     product_variant_id: item.product_variant_id,
                     manual_item_name: item.manual_item_name ?? "",
                     name,
@@ -159,7 +161,7 @@ function buildRows(purchase: EditPurchase, deviceConditions: DeviceConditionOpti
                     cost,
                     discPercent: cost > 0 ? (perUnitDiscount / cost) * 100 : 0,
                     taxMode,
-                    taxPercent: item.tax_pct,
+                    taxPercent: item.is_margin_scheme ? (item.variant_tax_pct ?? item.tax_pct) : item.tax_pct,
                     wholesale: b.wholesale_price ?? 0,
                     selling: b.selling_price ?? 0,
                 });
@@ -203,7 +205,7 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
     const { state, dispatch, flags, vendorIsRegistered, hasParty, subtotal, totalTax, grandTotal, dueAmount, deviceConditions } = usePurchase();
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [triedSubmit, setTriedSubmit] = useState(false);
-    const [idempotencyKey] = useState(() => generateUuid());
+    const [idempotencyKey, setIdempotencyKey] = useState(() => generateUuid());
     const hydratedRef = useRef(false);
 
     // Hydrate the reducer once from the posted purchase. Document-identity
@@ -261,9 +263,9 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
             if (r.is_serialized) {
                 if (r.imei1.trim() === "" && r.serial.trim() === "") list.push(`${label}: serialized item needs IMEI 1 or Serial.`);
                 const keys = [
-                    r.imei1.trim() && `imei1:${r.imei1.trim()}`,
-                    r.imei2.trim() && `imei2:${r.imei2.trim()}`,
-                    r.serial.trim() && `serial:${r.serial.trim()}`,
+                    r.imei1.trim() && `imei1:${r.imei1.trim().toLowerCase()}`,
+                    r.imei2.trim() && `imei2:${r.imei2.trim().toLowerCase()}`,
+                    r.serial.trim() && `serial:${r.serial.trim().toLowerCase()}`,
                 ].filter(Boolean) as string[];
                 for (const k of keys) {
                     if (seen.has(k)) list.push(`${label}: duplicate ${k.split(":")[0]} in this purchase.`);
@@ -285,13 +287,22 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
     const isValid = errors.length === 0;
     const delta = grandTotal - purchase.grand_total;
 
-    const handleSubmit = () => {
+    const [pinOpen, setPinOpen] = useState(false);
+    const [pinError, setPinError] = useState<string | null>(null);
+
+    // Save is PIN-gated: validate the form first, then ask for the store PIN.
+    const requestSubmit = () => {
         setTriedSubmit(true);
         if (isSubmitting) return;
         if (!isValid) {
             document.getElementById("purchase-validation")?.scrollIntoView({ behavior: "smooth", block: "center" });
             return;
         }
+        setPinError(null);
+        setPinOpen(true);
+    };
+
+    const handleSubmit = (securityPin: string) => {
         setIsSubmitting(true);
 
         const lines = groupRowsForSubmit(state.rows, flags, vendorIsRegistered, hasParty);
@@ -304,6 +315,7 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
         // Vendor can be changed (sent from state); date/bill/tax flags stay immutable.
         const payload = {
             idempotency_key: idempotencyKey,
+            security_pin: securityPin,
             po_number: purchase.po_number,
             vendor_invoice_no: state.vendorInvoiceNo || null,
             order_date: purchase.order_date,
@@ -341,7 +353,17 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
 
         router.put(updateUrl, payload as unknown as Parameters<typeof router.put>[1], {
             preserveScroll: true,
+            onError: (errs) => {
+                if (errs.security_pin) {
+                    setPinError(errs.security_pin as string);
+                    setPinOpen(true);
+                }
+            },
             onFinish: () => setIsSubmitting(false),
+            onSuccess: () => {
+                setPinOpen(false);
+                setIdempotencyKey(generateUuid());
+            },
         });
     };
 
@@ -349,13 +371,23 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
         <>
             <Head title={`Edit Purchase ${purchase.po_number}`} />
             <div className="min-h-[calc(100vh-3.5rem)] bg-muted-foreground/5">
-                <PurchaseHeader onSubmit={() => handleSubmit()} isSubmitting={isSubmitting} locked />
+                <PurchaseHeader onSubmit={() => requestSubmit()} isSubmitting={isSubmitting} locked />
                 <div className="flex h-full flex-1 flex-col gap-4 overflow-x-auto rounded-xl px-6 py-4">
                     <div className="bg-card pt-4 border rounded-md border-border text-sm">
                         <VendorAndDocMeta locked vendorLocked={false} />
                         <Separator className="mt-6" />
                         <LineItemTable />
-                        <PurchaseSummaryFooter onSubmit={() => handleSubmit()} isSubmitting={isSubmitting} triedSubmit={triedSubmit} errors={errors} isValid={isValid} locked />
+                        <PurchaseSummaryFooter onSubmit={() => requestSubmit()} isSubmitting={isSubmitting} triedSubmit={triedSubmit} errors={errors} isValid={isValid} locked />
+                    <SecurityPinModal
+                        open={pinOpen}
+                        onOpenChange={setPinOpen}
+                        onConfirm={(pin) => handleSubmit(pin)}
+                        title="Confirm purchase edit"
+                        description="Enter the store's 6-digit security PIN to save these changes."
+                        error={pinError}
+                        verifying={isSubmitting}
+                        confirmLabel="Save changes"
+                    />
                     </div>
                 </div>
             </div>

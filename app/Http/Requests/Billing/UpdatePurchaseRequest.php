@@ -15,6 +15,17 @@ namespace App\Http\Requests\Billing;
  */
 class UpdatePurchaseRequest extends StorePurchaseRequest
 {
+    protected function excludePurchaseId(): ?int
+    {
+        // Route parameter is {purchase} (the purchase uuid string).
+        $uuid = $this->route('purchase');
+        if (! $uuid || ! is_string($uuid)) {
+            return null;
+        }
+
+        return \App\Models\PurchaseOrder::where('uuid', $uuid)->value('id');
+    }
+
     public function rules(): array
     {
         return array_merge(parent::rules(), [

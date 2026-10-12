@@ -66,6 +66,18 @@ export interface LineRow {
     unit_status?: string | null;
     stock_batch_id?: number | null;
     batch_remaining_qty?: number | null;
+    batch_received_qty?: number | null; // immutable original received (edit mode)
+}
+
+export function blankRow(conditions: DeviceConditionOption[], storeIsGstRegistered: boolean): LineRow {
+    const def = conditions.find((c) => c.code.toUpperCase() === "NEW") ?? conditions[0];
+    return {
+        id: crypto.randomUUID(), product_variant_id: null, manual_item_name: "", name: "", sku: "",
+        hsn_code: "", is_serialized: true, imei1: "", imei2: "", serial: "", batteryHealth: "",
+        condition: def?.code ?? "NEW", condition_id: def?.id ?? null, quality: "good",
+        warrantyMode: "D", warrantyValue: "6 months", qty: 1, cost: 0, discPercent: 0,
+        taxMode: storeIsGstRegistered ? "I" : "E", taxPercent: 0, wholesale: 0, selling: 0,
+    };
 }
 
 interface PurchaseState {
@@ -123,7 +135,10 @@ export function PurchaseProvider({ children, store, deviceConditions, initialPoN
         poNumber: initialPoNumber, vendorInvoiceNo: "",
         orderDate: new Date().toISOString().slice(0, 10),
         columnVisibility: defaultColumnVisibility(store.is_iws_allowed, store.is_gst_registered),
-        rows: [], additionalDiscount: 0, freightCharges: 0, autoRoundOff: true,
+        // Start with one blank row so the user can type/scan immediately.
+        // The edit page replaces this via SET_ROWS during hydration.
+        rows: [blankRow(deviceConditions, store.is_gst_registered)],
+        additionalDiscount: 0, freightCharges: 0, autoRoundOff: true,
         markAsPaid: false, paidAmount: 0, paymentMode: "cash", notes: "",
         invoiceDocumentPath: null, additionalDocumentPath: null,
     });
@@ -231,10 +246,14 @@ export function groupRowsForSubmit(rows: LineRow[], flags: DocumentFlags, vendor
         // those are persisted at batch level — bulk rows that differ only in these
         // must not merge. (Serialized rows keep the old key: their quality/prices
         // live per-unit.)
+        // On edit, rows carrying a purchase_order_item_id must never merge
+        // across items — otherwise the backend would attach all units to one
+        // item and delete the other.
+        const itemPrefix = row.purchase_order_item_id != null ? `item:${row.purchase_order_item_id}_` : "";
         const key = row.product_variant_id != null
             ? (row.is_serialized
-                ? `v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}`
-                : `v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}_q:${row.quality.trim()}_w:${row.wholesale}_s:${row.selling}_wr:${row.warrantyMode === "D" ? row.warrantyValue.trim() : ""}`)
+                ? `${itemPrefix}v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}`
+                : `${itemPrefix}v:${row.product_variant_id}_cond:${row.condition}_cost:${row.cost}_disc:${row.discPercent}_tax:${row.taxMode}${row.taxPercent}_q:${row.quality.trim()}_w:${row.wholesale}_s:${row.selling}_wr:${row.warrantyMode === "D" ? row.warrantyValue.trim() : ""}`)
             : `m:${row.id}`;
 
         if (!map.has(key)) { orderKeys.push(key); map.set(key, []); }

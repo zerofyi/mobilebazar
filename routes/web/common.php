@@ -11,6 +11,7 @@ use App\Http\Controllers\InstallmentController;
 use App\Http\Controllers\LoanController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\DebitNoteController;
+use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseEntryController;
 use App\Http\Controllers\PurchaseReportController;
@@ -189,6 +190,11 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/', [SupplierPaymentController::class, 'index'])->name('index');
         Route::get('/create', [SupplierPaymentController::class, 'create'])->name('create');
         Route::post('/', [SupplierPaymentController::class, 'store'])->name('store');
+    });
+
+    // ── Stock inventory (read-only) ──
+    Route::prefix('inventory')->name('inventory.')->group(function () {
+        Route::get('/', [InventoryController::class, 'index'])->name('index');
     });
 
     // Per-supplier outstanding dues. Kept out of the `suppliers` group so it can

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -7,21 +7,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Copy, Plus, Search, ShoppingCart, Trash2, Zap, Check, ChevronsUpDown, Barcode, Sparkles, Layers, X } from "lucide-react";
+import { Copy, Plus, Search, ShoppingCart, Trash2, Zap, Check, ChevronsUpDown, Barcode, Sparkles, Layers, X, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { CalculatedRow, CatalogVariant, DeviceConditionOption, LineRow, TaxMode, WarrantyMode, usePurchase } from "../purchase-context";
+import { blankRow, CalculatedRow, CatalogVariant, DeviceConditionOption, LineRow, TaxMode, WarrantyMode, usePurchase } from "../purchase-context";
 import { useVariantSearch } from "@/hooks/use-purchase-search";
-
-export function blankRow(conditions: DeviceConditionOption[], storeIsGstRegistered: boolean): LineRow {
-    const def = conditions.find((c) => c.code.toUpperCase() === "NEW") ?? conditions[0];
-    return {
-        id: crypto.randomUUID(), product_variant_id: null, manual_item_name: "", name: "", sku: "",
-        hsn_code: "", is_serialized: true, imei1: "", imei2: "", serial: "", batteryHealth: "",
-        condition: def?.code ?? "NEW", condition_id: def?.id ?? null, quality: "good",
-        warrantyMode: "D", warrantyValue: "6 months", qty: 1, cost: 0, discPercent: 0,
-        taxMode: storeIsGstRegistered ? "I" : "E", taxPercent: 0, wholesale: 0, selling: 0,
-    };
-}
 
 function rowFromVariant(v: CatalogVariant, conditions: DeviceConditionOption[], storeIsGstRegistered: boolean, overrides: Partial<LineRow> = {}): LineRow {
     return { ...blankRow(conditions, storeIsGstRegistered), ...overrides, id: crypto.randomUUID(), product_variant_id: v.id, manual_item_name: "", name: `${v.product_name} (${v.variant_name})`, sku: v.sku, hsn_code: v.hsn_code ?? "", is_serialized: v.is_serialized, qty: v.is_serialized ? 1 : (overrides.qty ?? 1), cost: overrides.cost ?? v.cost_price, taxPercent: overrides.taxPercent ?? v.tax_pct, taxMode: overrides.taxMode ?? (storeIsGstRegistered ? "I" : "E"), wholesale: overrides.wholesale ?? v.cost_price, selling: overrides.selling ?? v.selling_price };
@@ -57,7 +46,7 @@ const QUALITIES = [
   "new",
 ];
 
-const ProductCell = React.memo(function ProductCell({ row }: { row: CalculatedRow }) {
+const ProductCell = React.memo(function ProductCell({ row, locked = false }: { row: CalculatedRow; locked?: boolean }) {
     const { dispatch } = usePurchase();
     const [open, setOpen] = useState(false);
     const { query, setQuery, results, loading, clearQuery } = useVariantSearch();
@@ -81,8 +70,8 @@ const ProductCell = React.memo(function ProductCell({ row }: { row: CalculatedRo
                     }}
                 >
                     <PopoverTrigger asChild>
-                        <Button variant="ghost" role="combobox" aria-expanded={open} className="w-full h-full justify-between px-1.5 text-xs font-normal rounded-none hover:bg-transparent border-none focus-visible:ring-1 focus-visible:ring-ring overflow-hidden">
-                            <span className="block w-full min-w-0 overflow-x-auto whitespace-nowrap text-left [&::-webkit-scrollbar]:hidden scrollbar-none">{row.product_variant_id ? row.name : row.manual_item_name || "Search or enter name..."}</span>
+                        <Button variant="ghost" role="combobox" aria-expanded={open} disabled={locked} className="w-full h-full justify-between px-1.5 text-xs font-normal rounded-none hover:bg-transparent border-none focus-visible:ring-1 focus-visible:ring-ring overflow-hidden disabled:opacity-70">
+                            <span className="block w-full min-w-0 truncate text-left" title={row.product_variant_id ? row.name : row.manual_item_name || undefined}>{row.product_variant_id ? row.name : row.manual_item_name || "Search or enter name..."}</span>
                             <ChevronsUpDown className="ml-0.5 h-3 w-3 shrink-0 opacity-50" />
                         </Button>
                     </PopoverTrigger>
@@ -111,7 +100,7 @@ const ProductCell = React.memo(function ProductCell({ row }: { row: CalculatedRo
                 </Popover>
             </div>
             <div className="w-15 shrink-0 border-l border-r h-full flex items-center" title="Battery Health (%)">
-                <Input type="number" placeholder="BH" aria-label="Battery Health" disabled={!row.is_serialized} min="0" max="100" value={row.batteryHealth} onChange={(e) => update("batteryHealth", e.target.value)} className="h-full px-0.5 text-center border-none rounded-none text-xs shadow-none focus-visible:ring-1 focus-visible:ring-ring disabled:bg-muted/20" />
+                <Input type="number" placeholder="BH" aria-label="Battery Health" disabled={!row.is_serialized || locked} min="0" max="100" value={row.batteryHealth} onChange={(e) => update("batteryHealth", e.target.value)} className="h-full px-0.5 text-center border-none rounded-none text-xs shadow-none focus-visible:ring-1 focus-visible:ring-ring disabled:bg-muted/20" />
             </div>
         </div>
     );
@@ -121,7 +110,21 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
     const { state, dispatch, deviceConditions } = usePurchase();
     const cv = state.columnVisibility;
 
-    const update = useCallback((field: keyof LineRow, value: unknown) => dispatch({ type: "UPDATE_ROW", payload: { id: row.id, field, value } }), [dispatch, row.id]);
+    // ── Row lock status (edit mode): sold/reserved stock can't be touched ──
+    const isSerializedLocked = row.is_serialized && row.unit_status != null && row.unit_status !== "available";
+    const soldQty = !row.is_serialized && row.batch_received_qty != null && row.batch_remaining_qty != null
+        ? Math.max(0, row.batch_received_qty - row.batch_remaining_qty)
+        : 0;
+    const isBatchPartiallyLocked = !row.is_serialized && row.stock_batch_id != null && soldQty > 0;
+    const isLocked = isSerializedLocked || isBatchPartiallyLocked;
+    const lockLabel = isSerializedLocked
+        ? (row.unit_status === "sold" ? "Sold" : row.unit_status === "reserved" ? "Reserved" : "Locked")
+        : isBatchPartiallyLocked ? `${soldQty} sold` : null;
+
+    const update = useCallback((field: keyof LineRow, value: unknown) => {
+        if (isLocked) return; // locked rows are read-only
+        dispatch({ type: "UPDATE_ROW", payload: { id: row.id, field, value } });
+    }, [dispatch, row.id, isLocked]);
     const cycleWarranty = () => { const next: Record<WarrantyMode, WarrantyMode> = { A: "D", D: "E", E: "A" }; update("warrantyMode", next[row.warrantyMode]); };
     const cycleTaxMode = () => update("taxMode", row.taxMode === "I" ? "E" : "I");
 
@@ -133,27 +136,34 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
         <TableRow
             className={cn(
                 "p-0 border-b transition-colors",
-                row._isMarginLine
-                    ? "bg-amber-500/15 hover:bg-amber-500/25"
-                    : "hover:bg-muted/20",
+                isSerializedLocked
+                    ? "bg-slate-200/60 hover:bg-slate-200/80"
+                    : isBatchPartiallyLocked
+                      ? "bg-amber-500/10 hover:bg-amber-500/20"
+                      : row._isMarginLine
+                        ? "bg-amber-500/15 hover:bg-amber-500/25"
+                        : "hover:bg-muted/20",
             )}
         >
             <TableCell className="p-0 text-center font-semibold text-muted-foreground border-r bg-muted/10 h-9">
-                <span className="inline-flex items-center gap-1">
+                <span className="inline-flex items-center gap-1" title={isLocked ? `Locked: ${lockLabel} — cannot be modified` : undefined}>
+                    {isLocked && <Lock className="size-3 text-muted-foreground" />}
                     {index + 1}
                 </span>
+                {isLocked && <div className="text-[9px] font-normal text-muted-foreground leading-none mt-0.5">{lockLabel}</div>}
             </TableCell>
             <TableCell
                 className={cn(
-                    "p-0 border-r h-9",
+                    "p-0 border-r h-9 max-w-75",
                     nameInvalid && "bg-destructive/5",
                 )}
             >
-                <ProductCell row={row} />
+                <ProductCell row={row} locked={isLocked} />
             </TableCell>
             {cv.type && (
                 <TableCell className="p-0 border-r h-9">
                     <Select
+                        disabled={isLocked}
                         value={row.condition}
                         onValueChange={(v) => {
                             const opt = deviceConditions.find(
@@ -183,6 +193,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
             {cv.quality && (
                 <TableCell className="p-0 border-r h-9">
                     <Select
+                        disabled={isLocked}
                         value={row.quality}
                         onValueChange={(v) => update("quality", v)}
                     >
@@ -209,6 +220,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         <Button
                             type="button"
                             size="icon"
+                            disabled={isLocked}
                             onClick={cycleWarranty}
                             className={cn(
                                 "h-5 w-5 shrink-0 text-[10px] font-extrabold p-0 rounded-xs transition-colors",
@@ -225,6 +237,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         <div className="flex-1 min-w-0 h-full flex items-center">
                             {row.warrantyMode === "D" ? (
                                 <Select
+                                    disabled={isLocked}
                                     value={row.warrantyValue}
                                     onValueChange={(v) =>
                                         update("warrantyValue", v)
@@ -248,6 +261,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                             ) : (
                                 <Input
                                     type="date"
+                                    disabled={isLocked}
                                     value={row.warrantyValue}
                                     onChange={(e) =>
                                         update("warrantyValue", e.target.value)
@@ -265,7 +279,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         <Input
                             type="text"
                             placeholder={row.is_serialized ? "IMEI 1" : "N/A"}
-                            disabled={!row.is_serialized}
+                            disabled={!row.is_serialized || isLocked}
                             value={row.imei1}
                             onChange={(e) => update("imei1", e.target.value)}
                             className={cn(
@@ -280,7 +294,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         <Input
                             type="text"
                             placeholder={row.is_serialized ? "IMEI 2" : "N/A"}
-                            disabled={!row.is_serialized}
+                            disabled={!row.is_serialized || isLocked}
                             value={row.imei2}
                             onChange={(e) => update("imei2", e.target.value)}
                             className={cn(
@@ -298,7 +312,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                     <Input
                         type="text"
                         placeholder={row.is_serialized ? "Serial No." : "N/A"}
-                        disabled={!row.is_serialized}
+                        disabled={!row.is_serialized || isLocked}
                         value={row.serial}
                         onChange={(e) => update("serial", e.target.value)}
                         className={cn(
@@ -314,7 +328,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                 <Input
                     type="number"
                     min="1"
-                    disabled={row.is_serialized}
+                    disabled={row.is_serialized || isLocked}
                     value={row.qty}
                     onChange={(e) =>
                         update(
@@ -336,6 +350,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         type="number"
                         step="0.01"
                         placeholder="0.00"
+                        disabled={isLocked}
                         value={row.cost || ""}
                         onChange={(e) =>
                             update("cost", parseFloat(e.target.value) || 0)
@@ -351,6 +366,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         step="0.01"
                         min="0"
                         max="100"
+                        disabled={isLocked}
                         value={row.discPercent}
                         onChange={(e) =>
                             update(
@@ -370,7 +386,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                             type="button"
                             size="icon"
                             onClick={cycleTaxMode}
-                            disabled={taxLocked}
+                            disabled={taxLocked || isLocked}
                             title={
                                 taxLocked
                                     ? "Margin scheme: tax 0% at purchase"
@@ -391,7 +407,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                             min="0"
                             max="100"
                             value={taxLocked ? 0 : row.taxPercent}
-                            disabled={taxLocked}
+                            disabled={taxLocked || isLocked}
                             onChange={(e) =>
                                 update(
                                     "taxPercent",
@@ -410,6 +426,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         type="number"
                         step="0.01"
                         placeholder="0.00"
+                        disabled={isLocked}
                         value={row.wholesale || ""}
                         onChange={(e) =>
                             update("wholesale", parseFloat(e.target.value) || 0)
@@ -424,6 +441,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         type="number"
                         step="0.01"
                         placeholder="0.00"
+                        disabled={isLocked}
                         value={row.selling || ""}
                         onChange={(e) =>
                             update("selling", parseFloat(e.target.value) || 0)
@@ -441,11 +459,13 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         type="button"
                         variant="ghost"
                         size="icon"
-                        disabled={!row.is_serialized}
+                        disabled={!row.is_serialized || isLocked}
                         title={
-                            row.is_serialized
-                                ? "Duplicate row specs"
-                                : "Bulk rows use QTY instead of duplicate rows"
+                            isLocked
+                                ? `Locked: ${lockLabel}`
+                                : row.is_serialized
+                                  ? "Duplicate row specs"
+                                  : "Bulk rows use QTY instead of duplicate rows"
                         }
                         onClick={() =>
                             dispatch({ type: "DUPLICATE_ROW", payload: row.id })
@@ -458,10 +478,12 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
                         type="button"
                         variant="ghost"
                         size="icon"
+                        disabled={isLocked}
+                        title={isLocked ? `Locked: ${lockLabel} — cannot be removed` : "Remove row"}
                         onClick={() =>
                             dispatch({ type: "REMOVE_ROW", payload: row.id })
                         }
-                        className="h-6 w-6 text-destructive hover:bg-destructive/10 p-0"
+                        className="h-6 w-6 text-destructive hover:bg-destructive/10 p-0 disabled:opacity-30 disabled:pointer-events-none"
                     >
                         <Trash2 className="w-3 h-3" />
                     </Button>
@@ -720,6 +742,47 @@ export default function LineItemTable() {
     const addVariantRow = useCallback((v: CatalogVariant) => { dispatch({ type: "ADD_ROW", payload: rowFromVariant(v, deviceConditions, store.is_gst_registered) }); }, [dispatch, deviceConditions, store.is_gst_registered]);
     const addRows = useCallback((rows: LineRow[]) => dispatch({ type: "ADD_ROWS", payload: rows }), [dispatch]);
 
+    const tableWrapRef = useRef<HTMLDivElement>(null);
+
+    // Enter inside a row input -> focus the next visible input/select in the
+    // table, so IMEIs can be scanned and prices entered without touching the mouse.
+    const handleTableKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+        const target = e.target as HTMLElement;
+        if (!(target instanceof HTMLInputElement)) return;
+        if (target.type === "checkbox" || target.type === "radio" || target.type === "button" || target.type === "submit") return;
+        const root = tableWrapRef.current;
+        if (!root) return;
+        // Don't hijack Enter inside floating pickers/dialogs.
+        if (target.closest('[data-radix-popper-content-wrapper], [role="dialog"]')) return;
+        const focusables = Array.from(
+            root.querySelectorAll('input:not(:disabled):not([type="hidden"]), button[role="combobox"]:not(:disabled)'),
+        ).filter((el) => (el as HTMLElement).offsetParent !== null) as HTMLElement[];
+        const idx = focusables.indexOf(target);
+        if (idx >= 0 && idx < focusables.length - 1) {
+            e.preventDefault();
+            focusables[idx + 1].focus();
+        }
+    }, []);
+
+    // Ctrl+N / Alt+N -> append a blank row. (Note: Chrome reserves Ctrl+N for
+    // "new window" and won't deliver it to the page; Alt+N works everywhere.)
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            const isN = e.key.toLowerCase() === "n";
+            if (!isN) return;
+            if (e.ctrlKey || e.metaKey || e.altKey) {
+                // Don't steal it while typing in a modal input.
+                const t = e.target as HTMLElement;
+                if (t.closest('[role="dialog"]')) return;
+                e.preventDefault();
+                addRow();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [addRow]);
+
     return (
         <div>
             <div className="flex items-center justify-between bg-muted border-b px-4 py-2 shadow-xs">
@@ -785,7 +848,7 @@ export default function LineItemTable() {
                 </div>
             </div>
 
-            <div className="w-full overflow-x-auto">
+            <div ref={tableWrapRef} onKeyDown={handleTableKeyDown} className="w-full overflow-x-auto">
                 <Table className="w-full border-collapse text-xs table-auto">
                     <TableHeader className="bg-muted/40">
                         <TableRow className="hover:bg-transparent">

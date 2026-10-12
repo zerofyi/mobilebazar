@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Head, Link, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
-import app from "@/routes/app";
 import {
     Search, Building2, CalendarDays, FileText, Loader2, ArrowLeft,
     CheckCircle2, AlertTriangle, Package, Smartphone,
@@ -21,7 +20,15 @@ import { cn } from "@/lib/utils";
 
 // Wayfinder route group for debit notes (generated from the `debit-notes`
 // route group; regenerates on `npm run build`).
-const dn = (app as any)["debit-notes"];
+// Plain URL helpers (wayfinder-free): stable under the /app prefix.
+const dn: Record<string, { url: (...args: string[]) => string }> = {
+    index: { url: () => '/app/debit-notes' },
+    create: { url: () => '/app/debit-notes/create' },
+    store: { url: () => '/app/debit-notes' },
+    show: { url: (uuid: string) => `/app/debit-notes/${uuid}` },
+    'purchases.search': { url: () => '/app/debit-notes/purchases/search' },
+    'purchase-stock': { url: (uuid: string) => `/app/debit-notes/purchase-stock/${uuid}` },
+};
 
 function getCsrfToken(): string {
     return document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? "";
@@ -264,7 +271,7 @@ export default function DebitNoteCreate({ preselectedPurchase, defaultDate }: Pr
     return (
         <>
             <Head title="New Debit Note" />
-            <div className="space-y-4 max-w-6xl">
+            <div className="flex h-full flex-1 flex-col gap-4 overflow-x-auto rounded-xl p-4">
                 {/* Header */}
                 <div className="flex items-center gap-3">
                     <Button variant="ghost" size="icon" asChild>

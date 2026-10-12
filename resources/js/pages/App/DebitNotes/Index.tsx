@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { Head, Link, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
-import app from "@/routes/app";
 import { usePermissions } from "@/hooks/user-permissions";
 import {
     ReceiptText, Wallet, BadgePercent, Plus, Search, Eye, Building2,
@@ -17,7 +16,15 @@ import { useFlashToast } from "@/hooks/use-flash-toast";
 
 // Wayfinder route group for debit notes (generated from the `debit-notes`
 // route group; regenerates on `npm run build`).
-const dn = (app as any)["debit-notes"];
+// Plain URL helpers (wayfinder-free): stable under the /app prefix.
+const dn: Record<string, { url: (...args: string[]) => string }> = {
+    index: { url: () => '/app/debit-notes' },
+    create: { url: () => '/app/debit-notes/create' },
+    store: { url: () => '/app/debit-notes' },
+    show: { url: (uuid: string) => `/app/debit-notes/${uuid}` },
+    'purchases.search': { url: () => '/app/debit-notes/purchases/search' },
+    'purchase-stock': { url: (uuid: string) => `/app/debit-notes/purchase-stock/${uuid}` },
+};
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -100,7 +107,7 @@ export default function DebitNotesIndex({ notes, summary, filters }: Props) {
     return (
         <>
             <Head title="Debit Notes" />
-            <div className="space-y-4">
+            <div className="flex h-full flex-1 flex-col gap-4 overflow-x-auto rounded-xl p-4">
                 {/* Header */}
                 <div className="flex items-center justify-between gap-3">
                     <div>

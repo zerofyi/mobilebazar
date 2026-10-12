@@ -1,7 +1,6 @@
 import React from "react";
 import { Head, Link } from "@inertiajs/react";
 import { dashboard } from "@/routes";
-import app from "@/routes/app";
 import {
     Wallet, Plus, Building2, Phone, ArrowLeft,
     ShoppingCart, CircleCheck, AlertTriangle, Clock,
@@ -52,10 +51,11 @@ interface Props {
 
 // Wayfinder regenerates these route helpers at build time; bracket access mirrors
 // the existing `app.loans['invoice-lookup']` pattern for hyphenated names.
-const spRoutes = (app as any)["supplier-payments"] as {
-    index: { url: () => string };
-    create: { url: () => string };
-    store: { url: () => string };
+// Plain URL helpers (wayfinder-free): stable under the /app prefix.
+const spRoutes: Record<string, { url: (...args: string[]) => string }> = {
+    index: { url: () => '/app/supplier-payments' },
+    create: { url: () => '/app/supplier-payments/create' },
+    store: { url: () => '/app/supplier-payments' },
 };
 
 function fmtDate(iso: string | null) {

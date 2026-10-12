@@ -34,9 +34,9 @@ function PurchaseEntryInner() {
             if (r.is_serialized) {
                 if (r.imei1.trim() === "" && r.serial.trim() === "") list.push(`${label}: serialized item needs IMEI 1 or Serial.`);
                 const keys = [
-                    r.imei1.trim() && `imei1:${r.imei1.trim()}`,
-                    r.imei2.trim() && `imei2:${r.imei2.trim()}`,
-                    r.serial.trim() && `serial:${r.serial.trim()}`,
+                    r.imei1.trim() && `imei1:${r.imei1.trim().toLowerCase()}`,
+                    r.imei2.trim() && `imei2:${r.imei2.trim().toLowerCase()}`,
+                    r.serial.trim() && `serial:${r.serial.trim().toLowerCase()}`,
                 ].filter(Boolean) as string[];
                 for (const k of keys) {
                     if (seen.has(k)) list.push(`${label}: duplicate ${k.split(":")[0]} in this purchase.`);

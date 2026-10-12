@@ -92,7 +92,9 @@ final class PurchaseService
             // (uniq_active_imei1/2/serial). That is a 422, never a 500.
             if ($this->isActiveIdentifierViolation($e)) {
                 throw ValidationException::withMessages([
-                    'lines' => 'A device with this IMEI or serial number is already in active stock. It may have been purchased concurrently — please review and retry.',
+                    'lines' => 'A device with this IMEI or serial number is already in active stock: '
+                        . $this->duplicateIdentifier($e)
+                        . '. It may have been purchased concurrently — please review and retry.',
                 ]);
             }
             throw $e;
@@ -112,6 +114,19 @@ final class PurchaseService
             || str_contains($message, 'uniq_active_serial');
     }
 
+    /**
+     * Pull the offending identifier out of a unique-violation message
+     * (MySQL: "Duplicate entry 'X' for key '...uniq_active_imei1'").
+     */
+    private function duplicateIdentifier(UniqueConstraintViolationException $e): string
+    {
+        if (preg_match("/Duplicate entry '([^']+)' for key '[^']*uniq_active_(imei1|imei2|serial)'/", $e->getMessage(), $m)) {
+            return "'{$m[1]}' ({$m[2]})";
+        }
+
+        return 'unknown identifier';
+    }
+
     private function createPurchase(Store $store, User $user, array $data): PurchaseOrder
     {
         $isDraft   = (bool) ($data['is_draft'] ?? false);
@@ -123,7 +138,7 @@ final class PurchaseService
         }
 
         // 1. Vendor
-        $vendor = $this->resolveVendor($data);
+        $vendor = $this->resolveVendor($data, $store);
 
         // 2. PO number
         $poNumber = $this->reservePoNumber($store->id, $data['bill_type']);
@@ -223,6 +238,12 @@ final class PurchaseService
             'line_count'      => count($data['lines'] ?? []),
         ]);
 
+        // Fail fast on a locked month — the reversal + repost land in the
+        // PO's order month, same as create.
+        if ($this->summaries->isMonthLocked($store->id, $po->order_date->format('Y-m'))) {
+            throw \App\Exceptions\MonthLockedException::for($store->id, $po->order_date->format('Y-m'));
+        }
+
         try {
             return DB::transaction(function () use ($store, $user, $po, $data, $key) {
                 $po = PurchaseOrder::where('store_id', $store->id)
@@ -255,7 +276,7 @@ final class PurchaseService
                 // Vendor can be changed like in create, or kept as-is.
                 // The journal reposts against the (possibly new) vendor.
                 if (! empty($data['party_id']) && ! empty($data['party_type'])) {
-                    $newVendor = $this->resolveVendor($data);
+                    $newVendor = $this->resolveVendor($data, $store);
                     $po->vendor()->associate($newVendor);
                 }
 
@@ -291,7 +312,9 @@ final class PurchaseService
             }
             if ($this->isActiveIdentifierViolation($e)) {
                 throw ValidationException::withMessages([
-                    'lines' => 'A device with this IMEI or serial number is already in active stock. It may have been purchased concurrently — please review and retry.',
+                    'lines' => 'A device with this IMEI or serial number is already in active stock: '
+                        . $this->duplicateIdentifier($e)
+                        . '. It may have been purchased concurrently — please review and retry.',
                 ]);
             }
             throw $e;
@@ -321,22 +344,23 @@ final class PurchaseService
         $po->loadMissing(['items.stockUnits', 'items.stockBatches']);
 
         // Index payload lines by their existing item id (null = new line).
+        // One item can have multiple lines (see rebuildStockSelective).
         $payloadLines = [];
         foreach ($data['lines'] ?? [] as $idx => $line) {
             $itemId = $line['purchase_order_item_id'] ?? null;
             if ($itemId) {
-                $payloadLines[$itemId] = ['line' => $line, 'idx' => $idx];
+                $payloadLines[$itemId][] = ['line' => $line, 'idx' => $idx];
             }
         }
 
         foreach ($po->items as $item) {
-            $inPayload = $payloadLines[$item->id] ?? null;
+            $inPayload = $payloadLines[$item->id] ?? [];
 
             // Collect locked stock for this line.
             $lockedUnits = $item->stockUnits->filter(fn ($u) => $u->status !== 'available');
             $lockedBatches = $item->stockBatches->filter(fn ($b) => $b->remaining_qty < $b->received_qty);
 
-            if (! $inPayload) {
+            if ($inPayload === []) {
                 // Line deleted — allowed only with zero movements.
                 if ($lockedUnits->isNotEmpty() || $lockedBatches->isNotEmpty()) {
                     $fail("lines", "Line '{$item->manual_item_name}' cannot be removed: some of its stock has been sold or moved.");
@@ -344,8 +368,21 @@ final class PurchaseService
                 continue;
             }
 
-            $line = $inPayload['line'];
-            $field = "lines.{$inPayload['idx']}";
+            // Merge all payload lines for this item (units/batches keyed by id).
+            $line = $inPayload[0]['line'];
+            $field = "lines.{$inPayload[0]['idx']}";
+            $mergedUnits = [];
+            $mergedBatches = [];
+            foreach ($inPayload as $pl) {
+                foreach ($pl['line']['units'] ?? [] as $u) {
+                    $mergedUnits[] = $u;
+                }
+                foreach ($pl['line']['batches'] ?? [] as $b) {
+                    $mergedBatches[] = $b;
+                }
+            }
+            $line['units'] = $mergedUnits;
+            $line['batches'] = $mergedBatches;
 
             // Variant change — only if no stock rows exist at all.
             if (($item->stockUnits->isNotEmpty() || $item->stockBatches->isNotEmpty())
@@ -427,18 +464,21 @@ final class PurchaseService
         $lockedUnitIds = collect($locked['units']);
         $lockedBatchIds = collect($locked['batches']);
 
-        // Index payload lines by existing item id.
+        // Index payload lines by existing item id. One item can map to
+        // MULTIPLE payload lines when its rows were edited to different costs
+        // (the frontend groups serialized rows by cost). Every line belongs to
+        // the item — dropping any of them would wipe its units.
         $payloadByItem = [];
         foreach ($lines as $line) {
             if (! empty($line['purchase_order_item_id'])) {
-                $payloadByItem[$line['purchase_order_item_id']] = $line;
+                $payloadByItem[$line['purchase_order_item_id']][] = $line;
             }
         }
 
         foreach ($po->items as $item) {
-            $payloadLine = $payloadByItem[$item->id] ?? null;
+            $payloadLines = $payloadByItem[$item->id] ?? [];
 
-            if (! $payloadLine) {
+            if ($payloadLines === []) {
                 // Deleted line — guards guarantee zero movements.
                 foreach ($item->stockUnits as $unit) {
                     $this->deleteUnitStock($unit, $store, $snapshots);
@@ -463,23 +503,14 @@ final class PurchaseService
             }
 
             // Update the item row from the payload (costs may have changed).
-            $item->update([
-                'product_variant_id' => $payloadLine['product_variant_id'] ?? $item->product_variant_id,
-                'manual_item_name'   => $payloadLine['manual_item_name'] ?? $item->manual_item_name,
-                'ordered_qty'        => $payloadLine['quantity'] ?? $item->ordered_qty,
-                'unit_cost'          => $this->r2($payloadLine['unit_cost'] ?? $item->unit_cost),
-                'tax_type'           => $payloadLine['tax_type'] ?? $item->tax_type,
-                'tax_pct'            => $this->r2($payloadLine['tax_pct'] ?? $item->tax_pct),
-                'is_margin_scheme'   => (bool) ($payloadLine['is_margin_scheme'] ?? $item->is_margin_scheme),
-                'base_cost'          => $this->r2($payloadLine['base_cost'] ?? $item->base_cost),
-                'landed_cost'        => $this->r2($payloadLine['landed_cost'] ?? $item->landed_cost),
-                'tax_amount'         => $this->r2($payloadLine['tax_amount'] ?? $item->tax_amount),
-                'discount_amount'    => $this->r2($payloadLine['discount_amount'] ?? 0),
-                'line_total'         => $this->r2($payloadLine['line_total'] ?? $item->line_total),
-            ]);
+            // Amounts are aggregated across the item's payload lines.
+            $item->update($this->aggregateItemLines($payloadLines, $item));
 
-            // Recreate stock from payload, skipping locked IDs (already in DB).
-            $this->recreateLineStock($po, $item, $store, $payloadLine, $user, $locked, $snapshots);
+            // Recreate stock from ALL payload lines, skipping locked IDs
+            // (already in DB).
+            foreach ($payloadLines as $payloadLine) {
+                $this->recreateLineStock($po, $item, $store, $payloadLine, $user, $locked, $snapshots);
+            }
         }
 
         // Brand-new lines.
@@ -490,7 +521,7 @@ final class PurchaseService
             $item = $po->items()->create([
                 'product_variant_id' => $line['product_variant_id'] ?? null,
                 'manual_item_name'   => $line['manual_item_name'] ?? null,
-                'ordered_qty'        => $line['quantity'] ?? 1,
+                'ordered_qty'        => $line['ordered_qty'] ?? $line['quantity'] ?? 1,
                 'unit_cost'          => $this->r2($line['unit_cost'] ?? 0),
                 'tax_type'           => $line['tax_type'] ?? 'exclusive',
                 'tax_pct'            => $this->r2($line['tax_pct'] ?? 0),
@@ -503,6 +534,43 @@ final class PurchaseService
             ]);
             $this->recreateLineStock($po, $item, $store, $line, $user, $locked, $snapshots);
         }
+    }
+
+    /**
+     * Aggregate an item's payload lines into the purchase_order_items row.
+     * Quantities and money sums add up; per-unit costs become qty-weighted
+     * averages. The per-unit truth lives on stock_units / stock_batches.
+     */
+    private function aggregateItemLines(array $lines, PurchaseOrderItem $item): array
+    {
+        $qty = 0.0; $unitCost = 0.0; $base = 0.0; $landed = 0.0;
+        $tax = 0.0; $disc = 0.0; $total = 0.0;
+        foreach ($lines as $line) {
+            $q = (float) ($line['ordered_qty'] ?? $line['quantity'] ?? 0);
+            $qty      += $q;
+            $unitCost += (float) ($line['unit_cost'] ?? 0) * $q;
+            $base     += (float) ($line['base_cost'] ?? 0) * $q;
+            $landed   += (float) ($line['landed_cost'] ?? 0) * $q;
+            $tax      += (float) ($line['tax_amount'] ?? 0);
+            $disc     += (float) ($line['discount_amount'] ?? 0);
+            $total    += (float) ($line['line_total'] ?? 0);
+        }
+        $first = $lines[0];
+
+        return [
+            'product_variant_id' => $first['product_variant_id'] ?? $item->product_variant_id,
+            'manual_item_name'   => $first['manual_item_name'] ?? $item->manual_item_name,
+            'ordered_qty'        => $qty > 0 ? $qty : $item->ordered_qty,
+            'unit_cost'          => $this->r2($qty > 0 ? $unitCost / $qty : ($first['unit_cost'] ?? $item->unit_cost)),
+            'tax_type'           => $first['tax_type'] ?? $item->tax_type,
+            'tax_pct'            => $this->r2($first['tax_pct'] ?? $item->tax_pct),
+            'is_margin_scheme'   => (bool) ($first['is_margin_scheme'] ?? $item->is_margin_scheme),
+            'base_cost'          => $this->r2($qty > 0 ? $base / $qty : ($first['base_cost'] ?? $item->base_cost)),
+            'landed_cost'        => $this->r2($qty > 0 ? $landed / $qty : ($first['landed_cost'] ?? $item->landed_cost)),
+            'tax_amount'         => $this->r2($tax),
+            'discount_amount'    => $this->r2($disc),
+            'line_total'         => $this->r2($total),
+        ];
     }
 
     /**
@@ -529,10 +597,34 @@ final class PurchaseService
                     if ($batch) {
                         $soldQty = $batch->received_qty - $batch->remaining_qty;
                         $newReceived = (int) ($batchData['quantity'] ?? $batch->received_qty);
+                        $delta = $newReceived - (int) $batch->received_qty;
                         $batch->update([
                             'received_qty'  => $newReceived,
                             'remaining_qty' => $newReceived - $soldQty,
                         ]);
+                        // Keep snapshot + ledger in sync (no drift).
+                        if ($delta !== 0) {
+                            $variantId = $batch->product_variant_id;
+                            if ($variantId && isset($snapshots[$variantId])) {
+                                $snapshot = $snapshots[$variantId];
+                                $balanceBefore = (int) $snapshot->quantity_on_hand;
+                                $ledger = StockLedger::create([
+                                    'idempotency_key'    => $po->uuid . ':editrev:batchadj:' . $batch->id . ':' . $newReceived,
+                                    'store_id'           => $store->id,
+                                    'product_variant_id' => $variantId,
+                                    'stock_batch_id'     => $batch->id,
+                                    'transaction_type'   => 'purchase_adjustment',
+                                    'quantity_delta'     => $delta,
+                                    'balance_after'      => $balanceBefore + $delta,
+                                    'base_cost'          => $batch->base_cost,
+                                    'landed_cost'        => $batch->landed_cost,
+                                    'reference_type'     => PurchaseOrderItem::class,
+                                    'reference_id'       => $item->id,
+                                    'created_by'         => $user->id,
+                                ]);
+                                $this->applyToSnapshot($snapshot, $delta, $ledger->id, null);
+                            }
+                        }
                     }
                     continue;
                 }
@@ -553,6 +645,10 @@ final class PurchaseService
             'purchase_id' => $po->id,
             'po_number'   => $po->po_number,
         ]);
+
+        if ($this->summaries->isMonthLocked($store->id, $po->order_date->format('Y-m'))) {
+            throw \App\Exceptions\MonthLockedException::for($store->id, $po->order_date->format('Y-m'));
+        }
 
         DB::transaction(function () use ($store, $user, $po) {
             $po = PurchaseOrder::where('store_id', $store->id)
@@ -603,45 +699,6 @@ final class PurchaseService
         }, self::TX_ATTEMPTS);
     }
 
-    /**
-     * Changing the party, date, store or tax flags is a different commercial
-     * event — the sanctioned path is cancel + recreate, not edit.
-     *
-     * @throws \Illuminate\Validation\ValidationException
-     */
-    private function assertImmutableFields(PurchaseOrder $po, array $data): void
-    {
-        $fail = fn (string $field) => throw ValidationException::withMessages([
-            $field => "The {$field} cannot be changed on a posted purchase. Cancel and recreate instead.",
-        ]);
-
-        if (Carbon::parse($data['order_date'])->format('Y-m-d') !== $po->order_date->format('Y-m-d')) {
-            $fail('order_date');
-        }
-
-        $vendorType = $data['party_type'] === 'supplier' ? Supplier::class : Customer::class;
-        if ($po->vendor_type !== $vendorType || (int) $po->vendor_id !== (int) $data['party_id']) {
-            $fail('party_id');
-        }
-
-        foreach (['bill_type', 'type'] as $field) {
-            if ((string) $po->{$field} !== (string) $data[$field]) {
-                $fail($field);
-            }
-        }
-
-        foreach (['is_gst_billed', 'is_intra_state'] as $field) {
-            if ((bool) $po->{$field} !== (bool) $data[$field]) {
-                $fail($field);
-            }
-        }
-
-        if (! empty($data['is_draft'])) {
-            throw ValidationException::withMessages([
-                'is_draft' => 'A posted purchase cannot be converted back to a draft.',
-            ]);
-        }
-    }
 
     /**
      * Reverse a posted purchase completely, inside the caller's transaction.
@@ -797,10 +854,29 @@ final class PurchaseService
         $unit->deviceHealth?->delete();
         $unit->events()->delete();
         $variantId = $unit->product_variant_id;
+        $baseCost = $unit->base_cost;
+        $landedCost = $unit->landed_cost;
+        $unitId = $unit->id;
         $unit->delete();
 
         if ($variantId && isset($snapshots[$variantId])) {
-            $this->applyToSnapshot($snapshots[$variantId], -1, null, null);
+            $snapshot = $snapshots[$variantId];
+            $balanceBefore = (int) $snapshot->quantity_on_hand;
+            $ledger = StockLedger::create([
+                'idempotency_key'    => 'editrev:unit:' . $unitId . ':' . time(),
+                'store_id'           => $store->id,
+                'product_variant_id' => $variantId,
+                'stock_batch_id'     => null,
+                'transaction_type'   => 'purchase_reversal',
+                'quantity_delta'     => -1,
+                'balance_after'      => $balanceBefore - 1,
+                'base_cost'          => $baseCost,
+                'landed_cost'        => $landedCost,
+                'reference_type'     => StockUnit::class,
+                'reference_id'       => $unitId,
+                'created_by'         => auth()->id(),
+            ]);
+            $this->applyToSnapshot($snapshot, -1, $ledger->id, null);
         }
     }
 
@@ -859,7 +935,7 @@ final class PurchaseService
             'imei2'                  => $this->blankToNull($unitData['imei2'] ?? $unitData['imei_2'] ?? null),
             'serial_number'          => $this->blankToNull($unitData['serial_number'] ?? null),
             'device_condition'       => strtoupper(trim((string) ($unitData['device_condition_code'] ?? 'NEW'))),
-            'overall_health'         => $this->blankToNull($unitData['overall_health'] ?? null),
+            'overall_health'         => $this->blankToNull($unitData['overall_health'] ?? null) ?? 'super mint',
             'is_saleable'            => true,
             'status'                 => 'available',
             'base_cost'              => $this->r2($unitData['unit_base_cost'] ?? $unitData['base_cost'] ?? 0),
@@ -895,7 +971,23 @@ final class PurchaseService
         ]);
 
         if ($variantId && isset($snapshots[$variantId])) {
-            $this->applyToSnapshot($snapshots[$variantId], 1, null, $event->id);
+            $snapshot = $snapshots[$variantId];
+            $balanceBefore = (int) $snapshot->quantity_on_hand;
+            $ledger = StockLedger::create([
+                'idempotency_key'    => $po->uuid . ':edit:item:' . $item->id . ':unit:' . $unit->id,
+                'store_id'           => $store->id,
+                'product_variant_id' => $variantId,
+                'stock_batch_id'     => null,
+                'transaction_type'   => 'purchase',
+                'quantity_delta'     => 1,
+                'balance_after'      => $balanceBefore + 1,
+                'base_cost'          => $unit->base_cost,
+                'landed_cost'        => $unit->landed_cost,
+                'reference_type'     => PurchaseOrderItem::class,
+                'reference_id'       => $item->id,
+                'created_by'         => $user->id,
+            ]);
+            $this->applyToSnapshot($snapshot, 1, $ledger->id, $event->id);
         }
     }
 
@@ -921,7 +1013,7 @@ final class PurchaseService
             'base_cost'              => $this->r2($batchData['base_cost'] ?? $item->base_cost),
             'landed_cost'            => $this->r2($batchData['landed_cost'] ?? $item->landed_cost),
             'is_margin_scheme'       => (bool) ($batchData['is_margin_scheme'] ?? $item->is_margin_scheme),
-            'product_condition'      => strtolower(trim((string) ($batchData['condition_code'] ?? 'new'))),
+            'product_condition'      => strtoupper(trim((string) ($batchData['condition_code'] ?? 'NEW'))),
             'overall_health'         => $this->blankToNull($batchData['overall_health'] ?? null),
             'remaining_warranty'     => $this->blankToNull($batchData['remaining_warranty'] ?? null),
             'wholesale_price'        => $this->positiveOrNull($batchData['wholesale_price'] ?? null),
@@ -973,7 +1065,7 @@ final class PurchaseService
             'product_variant_id' => $variantId,
             'manual_item_name'   => $manualName,
             'ordered_qty'        => $unitCount,
-            'unit_cost'          => $this->r2($lineData['landed_cost'] ?? 0),
+            'unit_cost'          => $this->r2($lineData['unit_cost'] ?? $lineData['landed_cost'] ?? 0),
             'tax_type'           => $lineData['tax_type'],
             'tax_pct'            => $this->r2($lineData['tax_pct']),
             'is_margin_scheme'   => (bool) $lineData['is_margin_scheme'],
@@ -989,6 +1081,7 @@ final class PurchaseService
         }
 
         $lastEventId = null;
+        $lastLedgerId = null;
 
         foreach ($units as $unitData) {
             [$activationDate, $warrantyExpiryDate, $remainingWarranty] = $this->warrantyFields($unitData);
@@ -1002,7 +1095,7 @@ final class PurchaseService
                 'imei2'                  => $this->blankToNull($unitData['imei2'] ?? null),
                 'serial_number'          => $this->blankToNull($unitData['serial_number'] ?? null),
                 'device_condition'       => strtoupper(trim((string) ($unitData['device_condition_code'] ?? 'NEW'))),
-                'overall_health'         => $this->blankToNull($unitData['overall_health'] ?? null),
+                'overall_health'         => $this->blankToNull($unitData['overall_health'] ?? null) ?? 'super mint',
                 'is_saleable'            => true,
                 'status'                 => 'available',
                 'base_cost'              => $this->r2($unitData['unit_base_cost'] ?? 0),
@@ -1038,9 +1131,31 @@ final class PurchaseService
             ]);
 
             $lastEventId = $event->id;
+
+            // Ledger entry per unit (bulk path does the same per batch).
+            if ($variantId && isset($snapshots[$variantId])) {
+                $snapshot = $snapshots[$variantId];
+                $balanceBefore = (int) $snapshot->quantity_on_hand;
+                $ledger = StockLedger::create([
+                    'idempotency_key'    => $po->uuid . ':create:item:' . $item->id . ':unit:' . $unit->id,
+                    'store_id'           => $store->id,
+                    'product_variant_id' => $variantId,
+                    'stock_batch_id'     => null,
+                    'transaction_type'   => 'purchase',
+                    'quantity_delta'     => 1,
+                    'balance_after'      => $balanceBefore + 1,
+                    'base_cost'          => $unit->base_cost,
+                    'landed_cost'        => $unit->landed_cost,
+                    'reference_type'     => PurchaseOrderItem::class,
+                    'reference_id'       => $item->id,
+                    'created_by'         => $user->id,
+                ]);
+                $this->applyToSnapshot($snapshot, 1, $ledger->id, $event->id);
+                $lastLedgerId = $ledger->id;
+            }
         }
 
-        if ($variantId && $unitCount > 0) {
+        if ($variantId && $unitCount > 0 && ! isset($lastLedgerId)) {
             $this->applyToSnapshot($snapshots[$variantId], $unitCount, null, $lastEventId);
         }
     }
@@ -1097,7 +1212,7 @@ final class PurchaseService
             'is_margin_scheme'       => (bool) $lineData['is_margin_scheme'],
             // Batch carries the line's condition + price overrides (columns exist
             // on stock_batches; previously computed client-side then dropped).
-            'product_condition'      => strtolower(trim((string) ($lineData['condition_code'] ?? 'new'))),
+            'product_condition'      => strtoupper(trim((string) ($lineData['condition_code'] ?? 'NEW'))),
             'overall_health'         => $this->blankToNull($lineData['overall_health'] ?? null),
             // Duration-style warranty only ('D' mode), mirroring stock_units.
             'remaining_warranty'     => $this->blankToNull($lineData['remaining_warranty'] ?? null),
@@ -1228,13 +1343,18 @@ final class PurchaseService
     | Vendor
     |--------------------------------------------------------------------------
     */
-    private function resolveVendor(array $data): Supplier|Customer
+    private function resolveVendor(array $data, Store $store): Supplier|Customer
     {
         $partyId = (int) $data['party_id'];
 
-        return $data['party_type'] === 'supplier'
-            ? Supplier::findOrFail($partyId)
-            : Customer::findOrFail($partyId);
+        if ($data['party_type'] === 'supplier') {
+            // Suppliers belong to a store — never let a purchase attach to
+            // another store's supplier.
+            return Supplier::where('store_id', $store->id)->findOrFail($partyId);
+        }
+
+        // Customers are chain-global (no store_id).
+        return Customer::findOrFail($partyId);
     }
 
     /*

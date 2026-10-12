@@ -31,6 +31,7 @@ class RoleAndPermissionSeeder extends Seeder
 
             'supplier-payments.index', 'supplier-payments.view', 'supplier-payments.create',
             'debit-notes.index', 'debit-notes.view', 'debit-notes.create',
+            'inventory.view',
 
             'sales.index', 'sales.view', 'sales.create', 'sales.update', 'sales.delete', 'sales.purge',
 
@@ -54,6 +55,7 @@ class RoleAndPermissionSeeder extends Seeder
             'purchases.index', 'purchases.view', 'purchases.create', 'purchases.update', 'purchases.delete',
             'supplier-payments.index', 'supplier-payments.view', 'supplier-payments.create',
             'debit-notes.index', 'debit-notes.view', 'debit-notes.create',
+            'inventory.view',
             'sales.index', 'sales.view', 'sales.create', 'sales.update', 'sales.delete',
 
             'loans.index', 'loans.view', 'loans.create', 'loans.update', 'loans.delete',

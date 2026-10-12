@@ -13,6 +13,8 @@ use App\Models\Store;
 use App\Services\PurchaseService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -151,7 +153,9 @@ class PurchaseEntryController extends Controller
 
         $purchase = PurchaseOrder::with([
             'vendor',
-            'items.productVariant:id,variant_name,sku',
+            'items.productVariant:id,variant_name,sku,product_id',
+            'items.productVariant.product:id,tax_category_id',
+            'items.productVariant.product.taxCategory:id,tax_percent',
             'items.stockUnits.deviceHealth:id,stock_unit_id,battery_health_pct',
             'items.stockBatches',
         ])
@@ -188,6 +192,8 @@ class PurchaseEntryController extends Controller
             ->firstOrFail();
 
         try {
+            $this->verifySecurityPin($store, $request->input('security_pin'));
+
             $updated = $this->purchaseService->updatePurchase(
                 store: $store,
                 user:  $user,
@@ -197,6 +203,8 @@ class PurchaseEntryController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             return back()->withErrors($e->errors())->withInput();
         } catch (\App\Exceptions\MonthLockedException $e) {
+            return back()->withErrors(['purchase' => $e->getMessage()])->withInput();
+        } catch (\App\Exceptions\AccountingException $e) {
             return back()->withErrors(['purchase' => $e->getMessage()])->withInput();
         }
 
@@ -213,6 +221,24 @@ class PurchaseEntryController extends Controller
     | destroy — reverse everything, then soft-delete the purchase
     |--------------------------------------------------------------------------
     */
+    /**
+     * Gate purchase edit/delete behind the store's 6-digit security PIN.
+     * Fail-closed: the store must have a PIN set, and it must match.
+     */
+    private function verifySecurityPin(Store $store, ?string $pin): void
+    {
+        if (empty($store->security_pin_hash)) {
+            throw ValidationException::withMessages([
+                'security_pin' => 'Set a security PIN for this store first (Store settings → Security PIN).',
+            ]);
+        }
+        if (empty($pin) || ! Hash::check($pin, $store->security_pin_hash)) {
+            throw ValidationException::withMessages([
+                'security_pin' => 'Incorrect security PIN.',
+            ]);
+        }
+    }
+
     public function destroy(string $uuid): RedirectResponse
     {
         $user  = Auth::user();
@@ -228,10 +254,14 @@ class PurchaseEntryController extends Controller
         $poNumber = $purchase->po_number;
 
         try {
+            $this->verifySecurityPin($store, request()->input('security_pin'));
+
             $this->purchaseService->deletePurchase($store, $user, $purchase);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return back()->withErrors($e->errors());
         } catch (\App\Exceptions\MonthLockedException $e) {
+            return back()->withErrors(['purchase' => $e->getMessage()]);
+        } catch (\App\Exceptions\AccountingException $e) {
             return back()->withErrors(['purchase' => $e->getMessage()]);
         }
 
@@ -420,6 +450,7 @@ class PurchaseEntryController extends Controller
                 'is_serialized'      => $item->stockUnits->isNotEmpty(),
                 'tax_type'           => $item->tax_type,
                 'tax_pct'            => (float) $item->tax_pct,
+                'variant_tax_pct'    => (float) ($item->productVariant?->product?->taxCategory?->tax_percent ?? 0),
                 'is_margin_scheme'   => (bool) $item->is_margin_scheme,
                 'base_cost'          => (float) $item->base_cost,
                 'landed_cost'        => (float) $item->landed_cost,

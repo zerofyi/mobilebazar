@@ -3,12 +3,13 @@ import { Head, Link, router } from '@inertiajs/react';
 import { dashboard } from '@/routes';
 import app from '@/routes/app';
 import { usePermissions } from '@/hooks/user-permissions';
+import SecurityPinModal from '@/components/SecurityPinModal';
 
 import {
     ShoppingCart, Plus, Search, Building2, UserRound, Eye,
     TrendingUp, AlertCircle, CheckCircle2, Clock, MapPin, Phone,
     Layers, Wallet, ArrowUpRight, BadgeCheck, FileText, CalendarClock,
-    Receipt, MoreVertical, Edit, Trash2, Printer
+    Receipt, MoreVertical, Edit, Trash2, Printer, FileMinus2
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -185,13 +186,39 @@ export default function Index({ purchases: purchaseList, filters, summary }: Pro
         updateFilters(search, status, billType, val);
     }, [search, status, billType, updateFilters]);
 
-    const handleDelete = useCallback((uuid: string) => {
-        if (confirm('Are you sure you want to delete this purchase order? This action cannot be undone.')) {
-            router.delete(app.purchases.destroy ? app.purchases.destroy.url(uuid) : `/purchases/${uuid}`, {
-                preserveState: true,
-            });
-        }
+    const [deleteTarget, setDeleteTarget] = useState<{ uuid: string; po_number: string } | null>(null);
+    const [pinOpen, setPinOpen] = useState(false);
+    const [pinError, setPinError] = useState<string | null>(null);
+    const [deleting, setDeleting] = useState(false);
+
+    // Delete is PIN-gated (same as the Show page): row action -> store PIN -> delete request.
+    const handleDelete = useCallback((uuid: string, po_number: string) => {
+        setDeleteTarget({ uuid, po_number });
+        setPinError(null);
+        setPinOpen(true);
     }, []);
+
+    const confirmDelete = useCallback((securityPin: string) => {
+        if (!deleteTarget) return;
+        setDeleting(true);
+        router.delete(`/app/purchases/${deleteTarget.uuid}`, {
+            data: { security_pin: securityPin },
+            preserveState: true,
+            onError: (errs) => {
+                if (errs.security_pin) {
+                    setPinError(errs.security_pin as string);
+                    setPinOpen(true);
+                }
+            },
+            onFinish: () => {
+                setDeleting(false);
+            },
+            onSuccess: () => {
+                setPinOpen(false);
+                setDeleteTarget(null);
+            },
+        });
+    }, [deleteTarget]);
 
     const loadingStats = !summary;
     const loadingList = !purchaseList;
@@ -551,6 +578,22 @@ export default function Index({ purchases: purchaseList, filters, summary }: Pro
                                                                 </DropdownMenuItem>
                                                             )}
 
+                                                            {can('debit-notes.create') && (
+                                                                <DropdownMenuItem asChild>
+                                                                    <Link href={`/app/debit-notes/create?purchase=${item.uuid}`} className="cursor-pointer text-xs">
+                                                                        <FileMinus2 className="mr-2 size-4 text-muted-foreground" /> Raise Debit Note
+                                                                    </Link>
+                                                                </DropdownMenuItem>
+                                                            )}
+
+                                                            {can('supplier-payments.create') && item.payment_status !== 'paid' && (
+                                                                <DropdownMenuItem asChild>
+                                                                    <Link href={`/app/supplier-payments/create?purchase=${item.uuid}`} className="cursor-pointer text-xs">
+                                                                        <Wallet className="mr-2 size-4 text-muted-foreground" /> Record Payment
+                                                                    </Link>
+                                                                </DropdownMenuItem>
+                                                            )}
+
                                                             {(can('purchases.update') || can('purchases.delete')) && <DropdownMenuSeparator />}
 
                                                             {can('purchases.update') && (
@@ -564,7 +607,7 @@ export default function Index({ purchases: purchaseList, filters, summary }: Pro
                                                             {can('purchases.delete') && (
                                                                 <DropdownMenuItem
                                                                     className="cursor-pointer text-xs text-destructive focus:text-destructive"
-                                                                    onClick={() => handleDelete(item.uuid)}
+                                                                    onClick={() => handleDelete(item.uuid, item.po_number)}
                                                                 >
                                                                     <Trash2 className="mr-2 size-4" /> Delete
                                                                 </DropdownMenuItem>
@@ -656,6 +699,18 @@ export default function Index({ purchases: purchaseList, filters, summary }: Pro
                     })()}
                 </Card>
             </div>
+
+            {/* ── Security PIN for delete ─────────────────────────────── */}
+            <SecurityPinModal
+                open={pinOpen}
+                onOpenChange={setPinOpen}
+                onConfirm={confirmDelete}
+                title="Confirm purchase delete"
+                description={deleteTarget ? `Enter the store's 6-digit security PIN to delete ${deleteTarget.po_number}.` : "Enter the store's 6-digit security PIN to delete this purchase."}
+                error={pinError}
+                verifying={deleting}
+                confirmLabel="Delete purchase"
+            />
         </>
     );
 }

@@ -101,7 +101,18 @@ class StorePurchaseRequest extends FormRequest
             'lines.*.units.*.overall_health'     => ['nullable', 'string', 'max:50'],
             'lines.*.units.*.battery_health_pct' => ['nullable', 'integer', 'min:0', 'max:100'],
             'lines.*.units.*.warranty_mode'      => ['nullable', Rule::in(['D', 'A', 'E'])],
-            'lines.*.units.*.warranty_value'     => ['nullable', 'string', 'max:20'],
+            'lines.*.units.*.warranty_value'     => ['nullable', 'string', 'max:20',
+                // A/E modes land in DATE columns — reject non-dates here (422, not 500).
+                function ($attr, $value, $fail) {
+                    $mode = $this->input(str_replace('.warranty_value', '.warranty_mode', $attr));
+                    if (in_array($mode, ['A', 'E'], true) && $value !== null && $value !== '') {
+                        $d = date_create($value);
+                        if (! $d || $d->format('Y-m-d') !== substr($value, 0, 10)) {
+                            $fail("Warranty date must be a valid date (YYYY-MM-DD) for mode {$mode}.");
+                        }
+                    }
+                },
+            ],
             'lines.*.units.*.unit_base_cost'     => ['nullable', 'numeric', 'min:0'],
             'lines.*.units.*.unit_landed_cost'   => ['nullable', 'numeric', 'min:0'],
             'lines.*.units.*.wholesale_price'    => ['nullable', 'numeric', 'min:0'],
@@ -115,6 +126,16 @@ class StorePurchaseRequest extends FormRequest
     | Cross-field domain validation (things rules() can't express)
     |--------------------------------------------------------------------------
     */
+    /**
+     * Purchase id whose own active units are ignored by the active-stock
+     * conflict check. Null on create. UpdatePurchaseRequest overrides this
+     * so an edit doesn't flag the purchase's own IMEIs as conflicts.
+     */
+    protected function excludePurchaseId(): ?int
+    {
+        return null;
+    }
+
     public function withValidator($validator): void
     {
         $validator->after(function ($v) {
@@ -210,9 +231,11 @@ class StorePurchaseRequest extends FormRequest
                 if ($values === []) {
                     continue;
                 }
+                $excludeId = $this->excludePurchaseId();
                 $taken = DB::table('stock_units')
                     ->whereIn($columnMap[$field], $values)
                     ->whereIn('status', ['available', 'reserved'])
+                    ->when($excludeId, fn ($q) => $q->where('purchase_order_id', '!=', $excludeId))
                     ->pluck($columnMap[$field])
                     ->all();
                 foreach ($taken as $dup) {

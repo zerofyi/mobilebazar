@@ -3,9 +3,10 @@ import { Head, Link, router } from '@inertiajs/react';
 import { dashboard } from '@/routes';
 import app from '@/routes/app';
 import { usePermissions } from '@/hooks/user-permissions';
+import SecurityPinModal from '@/components/SecurityPinModal';
 
 import {
-    ShoppingCart, ArrowLeft, Printer, Edit, Trash2, Building2, UserRound,
+    ShoppingCart, ArrowLeft, Printer, Edit, Trash2, Building2, UserRound, FileMinus2,
     Phone, Mail, MapPin, BadgeCheck, FileText,
     AlertCircle, Download, User, Clock, CalendarClock,
     ChevronDown, ChevronRight, Receipt, Cpu, Boxes, Wallet,
@@ -215,10 +216,34 @@ export default function Show({ purchase }: Props) {
         });
     };
 
+    const [pinOpen, setPinOpen] = useState(false);
+    const [pinError, setPinError] = useState<string | null>(null);
+    const [deleting, setDeleting] = useState(false);
+
+    // Delete is PIN-gated: confirm dialog -> store PIN -> delete request.
     const handleDelete = () => {
+        setPinError(null);
+        setDeleteOpen(false);
+        setPinOpen(true);
+    };
+
+    const confirmDelete = (securityPin: string) => {
+        setDeleting(true);
         router.delete(
             app.purchases.destroy ? app.purchases.destroy.url(purchase.uuid) : `/purchases/${purchase.uuid}`,
-            { onFinish: () => setDeleteOpen(false) },
+            {
+                data: { security_pin: securityPin },
+                onError: (errs) => {
+                    if (errs.security_pin) {
+                        setPinError(errs.security_pin as string);
+                        setPinOpen(true);
+                    }
+                },
+                onFinish: () => {
+                    setDeleting(false);
+                },
+                onSuccess: () => setPinOpen(false),
+            },
         );
     };
 
@@ -296,6 +321,22 @@ export default function Show({ purchase }: Props) {
                                 <Printer className="mr-2 size-4 text-muted-foreground" /> Print
                             </Link>
                         </Button>
+
+                        {can('debit-notes.create') && (
+                            <Button variant="outline" size="sm" asChild>
+                                <Link href={`/app/debit-notes/create?purchase=${purchase.uuid}`}>
+                                    <FileMinus2 className="mr-2 size-4 text-muted-foreground" /> Raise Debit Note
+                                </Link>
+                            </Button>
+                        )}
+
+                        {can('supplier-payments.create') && purchase.payment_status !== 'paid' && (
+                            <Button variant="outline" size="sm" asChild>
+                                <Link href={`/app/supplier-payments/create?purchase=${purchase.uuid}`}>
+                                    <Wallet className="mr-2 size-4 text-muted-foreground" /> Record Payment
+                                </Link>
+                            </Button>
+                        )}
 
                         {purchase.invoice_document_path && (
                             <Button variant="outline" size="sm" asChild>
@@ -882,6 +923,18 @@ export default function Show({ purchase }: Props) {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* ── Security PIN for delete ─────────────────────────────── */}
+            <SecurityPinModal
+                open={pinOpen}
+                onOpenChange={setPinOpen}
+                onConfirm={confirmDelete}
+                title="Confirm purchase delete"
+                description={`Enter the store's 6-digit security PIN to delete ${purchase.po_number}.`}
+                error={pinError}
+                verifying={deleting}
+                confirmLabel="Delete purchase"
+            />
         </>
     );
 }
