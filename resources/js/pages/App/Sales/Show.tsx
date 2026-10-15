@@ -1,8 +1,10 @@
-import React from "react";
-import { Head, Link } from "@inertiajs/react";
+import React, { useCallback, useState } from "react";
+import { Head, Link, router } from "@inertiajs/react";
 import {
     ChevronRight, ArrowLeft, Printer, UserRound, Phone, BadgeCheck,
     Package, Smartphone, Boxes,
+    Pencil,
+    Trash2,
 } from "lucide-react";
 import { dashboard } from "@/routes";
 import app from "@/routes/app";
@@ -14,6 +16,8 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { FormatAmount } from "@/components/special/format-amount";
 import { useFlashToast } from "@/hooks/use-flash-toast";
+import { usePermissions } from "@/hooks/user-permissions";
+import SecurityPinModal from "@/components/SecurityPinModal";
 
 // ─── Types (serialized by SaleEntryController@show) ──────────────────────────
 
@@ -97,6 +101,31 @@ function statusBadge(status: string) {
 
 export default function SaleShow({ invoice }: Props) {
     useFlashToast();
+    const { can } = usePermissions();
+    const [pinOpen, setPinOpen] = useState(false);
+    const [pinError, setPinError] = useState<string | null>(null);
+    const [deleting, setDeleting] = useState(false);
+
+    // Delete is PIN-gated: store PIN -> delete request (stock is restored by the backend).
+    const handleDelete = useCallback(() => {
+        setPinError(null);
+        setPinOpen(true);
+    }, []);
+
+    const confirmDelete = useCallback((securityPin: string) => {
+        setDeleting(true);
+        router.delete(`/app/sales/${invoice.uuid}`, {
+            data: { security_pin: securityPin },
+            onError: (errs) => {
+                if (errs.security_pin) {
+                    setPinError(errs.security_pin as string);
+                    setPinOpen(true);
+                }
+            },
+            onFinish: () => setDeleting(false),
+            onSuccess: () => setPinOpen(false),
+        });
+    }, [invoice.uuid]);
     const intra = invoice.is_intra_state;
     const cgst = invoice.items.reduce((s, i) => s + i.cgst_amount, 0);
     const sgst = invoice.items.reduce((s, i) => s + i.sgst_amount, 0);
@@ -130,6 +159,16 @@ export default function SaleShow({ invoice }: Props) {
                         <Link href={app.sales.print.url(invoice.uuid)}>
                             <Button><Printer className="size-4 mr-1.5" /> Print Invoice</Button>
                         </Link>
+                        {can('sales.update') && (
+                            <Link href={`/app/sales/${invoice.uuid}/edit`}>
+                                <Button variant="outline"><Pencil className="size-4 mr-1.5" /> Edit</Button>
+                            </Link>
+                        )}
+                        {can('sales.delete') && (
+                            <Button variant="destructive" onClick={handleDelete}>
+                                <Trash2 className="size-4 mr-1.5" /> Delete
+                            </Button>
+                        )}
                     </div>
                 </div>
 
@@ -254,6 +293,17 @@ export default function SaleShow({ invoice }: Props) {
                     </CardContent>
                 </Card>
             </div>
+
+            <SecurityPinModal
+                open={pinOpen}
+                onOpenChange={setPinOpen}
+                onConfirm={confirmDelete}
+                title="Confirm sale delete"
+                description={`Enter the store's 6-digit security PIN to delete ${invoice.invoice_number}. Its stock will be restored.`}
+                error={pinError}
+                verifying={deleting}
+                confirmLabel="Delete sale"
+            />
         </>
     );
 }

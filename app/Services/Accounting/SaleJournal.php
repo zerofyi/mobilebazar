@@ -68,7 +68,11 @@ final class SaleJournal
     /**
      * @param array{subtotal: float, tax_amount: float, discount_amount: float, shipping_charge: float, round_off: float, grand_total: float, paid_amount: float, due_amount: float} $totals
      */
-    public function post(Invoice $invoice, Store $store, User $user, array $totals, float $cogsTotal, string $paymentMode, bool $isIntraState): void
+    /**
+     * @param ?string $entrySuffix appended to entry numbers on re-posts
+     *        (e.g. '-R1' after an edit) — the original entries still exist.
+     */
+    public function post(Invoice $invoice, Store $store, User $user, array $totals, float $cogsTotal, string $paymentMode, bool $isIntraState, ?string $entrySuffix = null): void
     {
         $subtotal = JournalEntryData::toPaise($totals['subtotal']);
         $tax      = JournalEntryData::toPaise($totals['tax_amount']);
@@ -118,7 +122,7 @@ final class SaleJournal
 
         $this->accounting->post(new JournalEntryData(
             storeId:       $store->id,
-            entryNumber:   'JE-' . $invoice->invoice_number,
+            entryNumber:   'JE-' . $invoice->invoice_number . ($entrySuffix ?? ''),
             entryDate:     (string) $invoice->invoice_date,
             referenceType: Invoice::class,
             referenceId:   (int) $invoice->id,
@@ -130,7 +134,7 @@ final class SaleJournal
         if ($cogs > 0) {
             $this->accounting->post(new JournalEntryData(
                 storeId:       $store->id,
-                entryNumber:   'JE-COGS-' . $invoice->invoice_number,
+                entryNumber:   'JE-COGS-' . $invoice->invoice_number . ($entrySuffix ?? ''),
                 entryDate:     (string) $invoice->invoice_date,
                 referenceType: Invoice::class,
                 referenceId:   (int) $invoice->id,

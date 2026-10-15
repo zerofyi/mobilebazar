@@ -1,11 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import { Head, Link, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
 import app from "@/routes/app";
 import {
     ReceiptText, Wallet, Landmark, BadgePercent, Plus, Search, Eye, Printer,
     MoreVertical, CheckCircle2, Clock, AlertCircle, UserRound, Building2,
-    Phone, BadgeCheck, ArrowUpRight,
+    Phone, BadgeCheck, ArrowUpRight, Pencil, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,8 @@ import { cn } from "@/lib/utils";
 import { StatCard } from "@/components/special/stat-card";
 import { FormatAmount } from "@/components/special/format-amount";
 import { useFlashToast } from "@/hooks/use-flash-toast";
+import { usePermissions } from "@/hooks/user-permissions";
+import SecurityPinModal from "@/components/SecurityPinModal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -109,6 +111,34 @@ function PaymentBadge({ status }: { status: string }) {
 
 export default function SalesIndex({ sales, summary, filters }: Props) {
     useFlashToast();
+    const { can } = usePermissions();
+    const [deleteTarget, setDeleteTarget] = useState<{ uuid: string; invoice_number: string } | null>(null);
+    const [pinOpen, setPinOpen] = useState(false);
+    const [pinError, setPinError] = useState<string | null>(null);
+    const [deleting, setDeleting] = useState(false);
+
+    const handleDelete = useCallback((uuid: string, invoice_number: string) => {
+        setDeleteTarget({ uuid, invoice_number });
+        setPinError(null);
+        setPinOpen(true);
+    }, []);
+
+    const confirmDelete = useCallback((securityPin: string) => {
+        if (!deleteTarget) return;
+        setDeleting(true);
+        router.delete(`/app/sales/${deleteTarget.uuid}`, {
+            data: { security_pin: securityPin },
+            preserveState: true,
+            onError: (errs) => {
+                if (errs.security_pin) {
+                    setPinError(errs.security_pin as string);
+                    setPinOpen(true);
+                }
+            },
+            onFinish: () => setDeleting(false),
+            onSuccess: () => { setPinOpen(false); setDeleteTarget(null); },
+        });
+    }, [deleteTarget]);
     const [search, setSearch] = useState(filters.search ?? "");
     const [paymentStatus, setPaymentStatus] = useState(filters.payment_status ?? "all");
     const [dateFrom, setDateFrom] = useState(filters.date_from ?? "");
@@ -307,10 +337,8 @@ export default function SalesIndex({ sales, summary, filters }: Props) {
                                 ) : (
                                     sales.data.map((s, index) => {
                                         const serialNumber = from + index;
-                                        const loanable = s.due_amount > 0.009 && s.party?.type === "customer";
-                                        const loanBlockReason = s.due_amount <= 0.009
-                                            ? "No due amount on this invoice"
-                                            : "Loans need a customer party";
+                                        const loanable = !!s.party;
+                                        const loanBlockReason = "Loans need a customer or supplier party";
 
                                         return (
                                             <TableRow key={s.uuid} className="group transition-colors hover:bg-muted/20">
@@ -453,6 +481,21 @@ export default function SalesIndex({ sales, summary, filters }: Props) {
                                                                     <Printer className="mr-2 size-4 text-muted-foreground" /> Print
                                                                 </Link>
                                                             </DropdownMenuItem>
+                                                            {can('sales.update') && (
+                                                                <DropdownMenuItem asChild>
+                                                                    <Link href={`/app/sales/${s.uuid}/edit`} className="cursor-pointer text-xs">
+                                                                        <Pencil className="mr-2 size-4 text-muted-foreground" /> Edit Sale
+                                                                    </Link>
+                                                                </DropdownMenuItem>
+                                                            )}
+                                                            {can('sales.delete') && (
+                                                                <DropdownMenuItem
+                                                                    className="cursor-pointer text-xs text-destructive focus:text-destructive"
+                                                                    onClick={() => handleDelete(s.uuid, s.invoice_number)}
+                                                                >
+                                                                    <Trash2 className="mr-2 size-4" /> Delete
+                                                                </DropdownMenuItem>
+                                                            )}
                                                             <DropdownMenuSeparator />
                                                             {loanable ? (
                                                                 <DropdownMenuItem asChild>
@@ -518,6 +561,17 @@ export default function SalesIndex({ sales, summary, filters }: Props) {
                     )}
                 </Card>
             </div>
+
+            <SecurityPinModal
+                open={pinOpen}
+                onOpenChange={setPinOpen}
+                onConfirm={confirmDelete}
+                title="Confirm sale delete"
+                description={deleteTarget ? `Enter the store's 6-digit security PIN to delete ${deleteTarget.invoice_number}. Its stock will be restored.` : "Enter the store's 6-digit security PIN to delete this sale."}
+                error={pinError}
+                verifying={deleting}
+                confirmLabel="Delete sale"
+            />
         </>
     );
 }

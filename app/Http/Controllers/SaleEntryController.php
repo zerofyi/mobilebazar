@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Http\Requests\Billing\StoreSaleRequest;
+use App\Http\Requests\Billing\UpdateSaleRequest;
 use App\Models\Category;
 use App\Models\Customer;
 use App\Models\Invoice;
@@ -21,7 +22,9 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -405,6 +408,273 @@ class SaleEntryController extends Controller
 
     /*
     |--------------------------------------------------------------------------
+    | edit — load any sale into the POS form for revision.
+    | Every sale is editable unless a loan is linked or its stock effects
+    | can no longer be reversed (see SaleService::assertSaleEditable).
+    |--------------------------------------------------------------------------
+    */
+    public function edit(string $sale): Response
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore.address');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $invoice = Invoice::with([
+            'party',
+            'items.productVariant:id,product_id,variant_name,sku,selling_price,min_selling_price',
+            'items.productVariant.product:id,name,hsn_code,tax_category_id',
+            'items.productVariant.product.taxCategory:id,tax_percent',
+            'items.stockUnit:id,product_variant_id,manual_item_name,imei1,imei2,serial_number,device_condition,overall_health,landed_cost,is_margin_scheme,selling_price,wholesale_price,remaining_warranty,status',
+            'items.batchAllocations.stockBatch:id,batch_number,product_condition,remaining_warranty',
+        ])
+            ->where('store_id', $store->id)
+            ->where('uuid', $sale)
+            ->firstOrFail();
+
+        $categories = Category::where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->select('id', 'name')
+            ->get();
+
+        return Inertia::render('Billing/SaleEntry/Edit', [
+            'store' => [
+                'id'                => $store->id,
+                'code'              => $store->code,
+                'name'              => $store->name,
+                'gstin'             => $store->gstin,
+                'is_gst_registered' => (bool) $store->is_gst_registered,
+                'state_code'        => $store->gstin ? substr($store->gstin, 0, 2) : $store->address?->state_code,
+            ],
+            'categories' => $categories,
+            'invoice'    => $this->serializeForEdit($invoice, $store),
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | update — reverse-and-repost inside one transaction (PIN-gated)
+    |--------------------------------------------------------------------------
+    */
+    public function update(UpdateSaleRequest $request, string $sale): RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $invoice = Invoice::where('store_id', $store->id)
+            ->where('uuid', $sale)
+            ->firstOrFail();
+
+        try {
+            $this->verifySecurityPin($store, $request->input('security_pin'));
+
+            $updated = $this->saleService->updateSale(
+                store:   $store,
+                user:    $user,
+                invoice: $invoice,
+                data:    $request->validated(),
+            );
+        } catch (ValidationException $e) {
+            return back()->withErrors($e->errors())->withInput();
+        } catch (\App\Exceptions\MonthLockedException $e) {
+            return back()->withErrors(['invoice' => $e->getMessage()])->withInput();
+        } catch (\App\Exceptions\AccountingException $e) {
+            return back()->withErrors(['invoice' => $e->getMessage()])->withInput();
+        }
+
+        return redirect()
+            ->route('app.sales.show', $updated->uuid)
+            ->with('flash', [
+                'type'    => 'success',
+                'message' => "Sale {$updated->invoice_number} updated (revision {$updated->revision}).",
+            ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | destroy — reverse everything, then delete the invoice (PIN-gated)
+    |--------------------------------------------------------------------------
+    */
+    public function destroy(string $sale): RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $invoice = Invoice::where('store_id', $store->id)
+            ->where('uuid', $sale)
+            ->firstOrFail();
+
+        try {
+            $this->verifySecurityPin($store, request()->input('security_pin'));
+
+            $this->saleService->deleteSale($store, $user, $invoice);
+        } catch (ValidationException $e) {
+            return back()->withErrors($e->errors());
+        } catch (\App\Exceptions\MonthLockedException $e) {
+            return back()->withErrors(['invoice' => $e->getMessage()]);
+        }
+
+        return redirect()
+            ->route('app.sales.index')
+            ->with('flash', [
+                'type'    => 'success',
+                'message' => "Sale {$invoice->invoice_number} deleted and its stock restored.",
+            ]);
+    }
+
+    /**
+     * Gate sale edit/delete behind the store's 6-digit security PIN.
+     * Fail-closed: the store must have a PIN set, and it must match.
+     */
+    private function verifySecurityPin(Store $store, ?string $pin): void
+    {
+        if (empty($store->security_pin_hash)) {
+            throw ValidationException::withMessages([
+                'security_pin' => 'Set a security PIN for this store first (Store settings → Security PIN).',
+            ]);
+        }
+        if (empty($pin) || ! Hash::check($pin, $store->security_pin_hash)) {
+            throw ValidationException::withMessages([
+                'security_pin' => 'Incorrect security PIN.',
+            ]);
+        }
+    }
+
+    /**
+     * Serialize an invoice into the POS hydrator shape (mirrors CartLine /
+     * StockUnitMeta in sale-context.tsx). One cart line per invoice item;
+     * serialized lines carry their sold units, bulk lines carry the batch
+     * they were allocated from so re-allocation starts in the same place.
+     */
+    private function serializeForEdit(Invoice $invoice, Store $store): array
+    {
+        // Available qty per variant if the cashier increases a bulk line:
+        // current snapshot on-hand + what this invoice consumed (reversal restores it).
+        $consumedByVariant = [];
+        foreach ($invoice->items as $item) {
+            if (! $item->stock_unit_id && $item->product_variant_id) {
+                $consumedByVariant[$item->product_variant_id] =
+                    ($consumedByVariant[$item->product_variant_id] ?? 0) + (int) $item->quantity;
+            }
+        }
+        $snapshots = \App\Models\StockSnapshot::where('store_id', $store->id)
+            ->whereIn('product_variant_id', array_keys($consumedByVariant))
+            ->pluck('quantity_on_hand', 'product_variant_id');
+
+        $party = $invoice->party;
+        $partyType = $invoice->party_type === \App\Models\Supplier::class ? 'supplier' : 'customer';
+
+        $lines = [];
+        foreach ($invoice->items as $item) {
+            $variant  = $item->productVariant;
+            $product  = $variant?->product;
+            $isSer    = (bool) $item->stock_unit_id;
+            $taxPct   = (float) $item->tax_pct;
+
+            $base = [
+                'product_variant_id' => $item->product_variant_id,
+                'manual_item_name'   => $item->manual_item_name,
+                'product_name'       => $item->manual_item_name
+                    ?? ($product ? trim($product->name . ($variant ? ' · ' . $variant->variant_name : '')) : '—'),
+                'sku'                => $variant?->sku ?? '',
+                'hsn_code'           => $product?->hsn_code,
+                'is_serialized'      => $isSer,
+                'qty'                => (int) $item->quantity,
+                'unit_price'         => (float) $item->unit_price,
+                'retail_price'       => (float) $item->unit_price,
+                'min_selling_price'  => (float) ($variant?->min_selling_price ?? 0),
+                'warranty'           => $item->warranty,
+                'discount_amount'    => (float) $item->discount_amount,
+                'tax_type'           => $item->tax_type,
+                'tax_pct'            => $taxPct,
+                'landed_cost_preview'      => (float) ($item->landed_cost ?? 0),
+                'is_margin_scheme_preview' => (bool) $item->is_margin_scheme,
+                'img'                => null,
+            ];
+
+            if ($isSer && $item->stockUnit) {
+                $u = $item->stockUnit;
+                $meta = [
+                    'id'               => $u->id,
+                    'variant_id'       => $u->product_variant_id,
+                    'name'             => $u->manual_item_name ?? $base['product_name'],
+                    'imei1'            => $u->imei1,
+                    'imei2'            => $u->imei2,
+                    'serial_number'    => $u->serial_number,
+                    'device_condition' => $u->device_condition,
+                    'overall_health'   => $u->overall_health,
+                    'landed_cost'      => (float) $u->landed_cost,
+                    'is_margin_scheme' => (bool) $u->is_margin_scheme,
+                    'selling_price'    => $u->selling_price !== null ? (float) $u->selling_price : null,
+                    'wholesale_price'  => $u->wholesale_price !== null ? (float) $u->wholesale_price : null,
+                    'variant_price'    => (float) ($variant?->selling_price ?? 0),
+                    'tax_pct'          => $taxPct,
+                    'warranty'         => $u->remaining_warranty,
+                ];
+                $lines[] = array_merge($base, [
+                    'unit_ids'            => [$u->id],
+                    'unit_metas'          => [$meta],
+                    'units_pool'          => [],
+                    'available_qty'       => 1,
+                    'preferred_batch_id'  => null,
+                    'batch_label'         => null,
+                    'batch_retail_price'  => null,
+                    'batch_wholesale_price' => null,
+                ]);
+            } else {
+                $alloc = $item->batchAllocations->first();
+                $batch = $alloc?->stockBatch;
+                $variantId = $item->product_variant_id;
+                $lines[] = array_merge($base, [
+                    'unit_ids'            => [],
+                    'unit_metas'          => [],
+                    'units_pool'          => [],
+                    // What the cashier may raise qty to: live on-hand + this sale's take.
+                    'available_qty'       => max(
+                        (int) $item->quantity,
+                        (int) ($snapshots[$variantId] ?? 0) + ($consumedByVariant[$variantId] ?? 0)
+                    ),
+                    'preferred_batch_id'  => $batch?->id,
+                    'batch_label'         => $batch ? ($batch->batch_number . ' · ' . $batch->product_condition) : null,
+                    'batch_retail_price'  => null,
+                    'batch_wholesale_price' => null,
+                ]);
+            }
+        }
+
+        return [
+            'uuid'            => $invoice->uuid,
+            'invoice_number'  => $invoice->invoice_number,
+            'invoice_date'    => $invoice->invoice_date->format('Y-m-d'),
+            'party'           => $party ? [
+                'type'  => $partyType,
+                'id'    => $party->id,
+                'name'  => $party->name ?? $party->company_name ?? '—',
+                'phone' => $party->phone ?? null,
+            ] : null,
+            'saleMode'        => $invoice->invoice_type,
+            'taxMovement'     => $invoice->is_intra_state ? 'intra' : 'inter',
+            'isGstBilled'     => (bool) $invoice->is_gst_billed,
+            'billDiscount'    => (float) $invoice->discount_amount,
+            'shippingCharge'  => (float) $invoice->shipping_charge,
+            'paidAmount'      => (float) $invoice->paid_amount,
+            'paidInFull'      => $invoice->payment_status === 'paid' && (float) $invoice->due_amount <= 0.009,
+            'paymentMode'     => $invoice->payment_mode,
+            'notes'           => $invoice->notes ?? '',
+            'lines'           => $lines,
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | show — invoice detail
     |--------------------------------------------------------------------------
     */
@@ -465,6 +735,11 @@ class SaleEntryController extends Controller
                 'gstin'   => $store->gstin ?? null,
                 'state'   => $store->address?->state ?? null,
                 'address' => $store->address?->formatted_address ?? $store->location_address ?? null,
+                'bank_name'                => $store->bank_name ?? null,
+                'bank_account_holder_name' => $store->bank_account_holder_name ?? null,
+                'bank_account_number'      => $store->bank_account_number ?? null,
+                'bank_ifsc'                => $store->bank_ifsc ?? null,
+                'bank_upi_id'              => $store->bank_upi_id ?? null,
             ],
         ]);
     }

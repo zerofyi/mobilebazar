@@ -52,7 +52,7 @@ function Segmented<T extends string>({
  * Party selection lives in PartyStrip; the wholesale + GST-bill toggles
  * live in the header — this card is invoice-only.
  */
-export default function InvoiceMeta() {
+export default function InvoiceMeta({ lockDate }: { lockDate?: boolean }) {
     const { state, dispatch, computedLines } = useSale();
 
     const hasMargin = computedLines.some((l) => l._margin);
@@ -91,6 +91,8 @@ export default function InvoiceMeta() {
                         type="date"
                         value={state.invoiceDate}
                         onChange={(e) => dispatch({ type: "SET_INVOICE_DATE", payload: e.target.value })}
+                        disabled={!!lockDate}
+                        title={lockDate ? "Invoice date cannot be changed on edit" : undefined}
                         className="h-9 text-sm"
                     />
                 </div>

@@ -175,7 +175,6 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
 
         // 2. Custom action routes on specific items (Place BEFORE general show/update/destroy)
         Route::get('/{sale}/print', [SaleEntryController::class, 'print'])->name('print');
-        Route::delete('/{sale}/purge', [SaleEntryController::class, 'purge'])->name('purge');
 
         // 3. Standard Resource routes with parameters
         Route::get('/{sale}', [SaleEntryController::class, 'show'])->name('show');
@@ -195,6 +194,9 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
     // ── Stock inventory (read-only) ──
     Route::prefix('inventory')->name('inventory.')->group(function () {
         Route::get('/', [InventoryController::class, 'index'])->name('index');
+        // Static before wildcard: /verify/search must not match {kind}.
+        Route::get('/verify/search', [InventoryController::class, 'verifySearch'])->name('verify.search');
+        Route::get('/verify/{kind}/{id}', [InventoryController::class, 'verifyShow'])->name('verify.show');
     });
 
     // Per-supplier outstanding dues. Kept out of the `suppliers` group so it can

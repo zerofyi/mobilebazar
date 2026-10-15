@@ -14,9 +14,13 @@ interface Props {
     onPark: () => void;
     onClear: () => void;
     isSubmitting: boolean;
+    /** Edit mode: park makes no sense — hide the button. */
+    hidePark?: boolean;
+    /** Edit mode: label for the clear/reset button. */
+    clearLabel?: string;
 }
 
-export default function SaleHeader({ onPark, onClear, isSubmitting }: Props) {
+export default function SaleHeader({ onPark, onClear, isSubmitting, hidePark, clearLabel }: Props) {
     const { state, dispatch, store } = useSale();
 
     return (
@@ -79,11 +83,13 @@ export default function SaleHeader({ onPark, onClear, isSubmitting }: Props) {
                             </div>
                         )}
 
-                        <Button type="button" variant="outline" disabled={isSubmitting} onClick={onPark} title="Park this sale and resume later">
-                            <PauseCircle className="size-4 mr-1.5" /> Park Sale
-                        </Button>
+                        {!hidePark && (
+                            <Button type="button" variant="outline" disabled={isSubmitting} onClick={onPark} title="Park this sale and resume later">
+                                <PauseCircle className="size-4 mr-1.5" /> Park Sale
+                            </Button>
+                        )}
                         <Button type="button" variant="outline" disabled={isSubmitting} onClick={onClear} title="Clear the cart">
-                            <Trash2 className="size-4 mr-1.5" /> Clear
+                            <Trash2 className="size-4 mr-1.5" /> {clearLabel ?? "Clear"}
                         </Button>
                     </div>
                 </div>

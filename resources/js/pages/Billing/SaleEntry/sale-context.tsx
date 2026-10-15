@@ -320,7 +320,7 @@ export function batchPriceFor(b: SearchBatch, p: BulkSearchResult, mode: SaleMod
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
-interface SaleState {
+export interface SaleState {
     store: StoreInfo;
     idempotencyKey: string; // one key per page lifetime — reused across Save retries
     lines: CartLine[];
@@ -935,7 +935,7 @@ export function buildSalePayload(
     };
 }
 
-function generateUuid(): string {
+export function generateUuid(): string {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
         return crypto.randomUUID().toLowerCase();
     }

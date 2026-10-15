@@ -1,9 +1,9 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Head, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
 import { usePermissions } from "@/hooks/user-permissions";
 import {
-    Boxes, Cpu, Search, IndianRupee, PackageCheck, Layers,
+    Boxes, Cpu, Search, IndianRupee, PackageCheck, Layers, ScanSearch,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,6 +14,8 @@ import { FormatAmount } from "@/components/special/format-amount";
 import { Badge } from "@/components/ui/badge";
 import { useFlashToast } from "@/hooks/use-flash-toast";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import VerifyStockModal from "@/components/VerifyStockModal";
 
 // Plain URL helpers (wayfinder-free): stable under the /app prefix.
 const inv = {
@@ -114,6 +116,14 @@ function statusBadge(status: string) {
 export default function InventoryIndex({ tab, filters, summary, units, batches }: Props) {
     useFlashToast();
     const { can } = usePermissions();
+    const [verifyOpen, setVerifyOpen] = useState(false);
+
+    // Sidebar "Verify Stock" deep-link auto-opens the modal.
+    useEffect(() => {
+        if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("verify") === "1") {
+            setVerifyOpen(true);
+        }
+    }, []);
     const [search, setSearch] = useState(filters.search ?? "");
     const [status, setStatus] = useState(filters.status ?? "all");
     const [condition, setCondition] = useState(filters.condition ?? "all");
@@ -205,6 +215,9 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
                             Live stock across the store — every serialized unit and every bulk batch.
                         </p>
                     </div>
+                    <Button onClick={() => setVerifyOpen(true)} className="shrink-0">
+                        <ScanSearch className="mr-1.5 size-4" /> Verify Stock
+                    </Button>
                 </div>
 
                 {/* Summary Stats Bar */}
@@ -432,6 +445,8 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
 
                 {renderPagination(tab === 'serialized' ? units : batches)}
             </div>
+
+            <VerifyStockModal open={verifyOpen} onOpenChange={setVerifyOpen} />
         </>
     );
 }
