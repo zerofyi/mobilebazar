@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 #[Fillable([
     'credit_note_id',
+    'invoice_item_id',
     'product_variant_id',
     'manual_item_name',
     'quantity',

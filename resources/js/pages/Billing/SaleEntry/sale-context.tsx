@@ -34,6 +34,18 @@ import React, { createContext, useContext, useMemo, useReducer } from "react";
 
 export type TaxMovement = "intra" | "inter";
 export type PaymentMode = "cash" | "upi" | "neft" | "cheque" | "card" | "bank";
+export type SplitMode = PaymentMode | "buyback";
+
+/** One row of the per-invoice payment breakdown. */
+export interface PaymentSplit {
+    id: string;
+    mode: SplitMode;
+    amount: number;
+    reference?: string;
+    purchase_order_id?: number;
+    /** Buyback splits are system-added and can't be edited/removed by hand. */
+    locked?: boolean;
+}
 export type PartyType = "customer" | "supplier";
 export type SaleMode = "retail" | "wholesale";
 
@@ -337,6 +349,8 @@ export interface SaleState {
     paidAmount: number;
     paidInFull: boolean; // checkbox: paid always tracks the grand total
     paymentMode: PaymentMode;
+    /** Per-mode payment breakdown. Empty = single payment (paymentMode × paidAmount). */
+    payments: PaymentSplit[];
     notes: string;
 }
 
@@ -384,6 +398,7 @@ export function initialSaleState(store: StoreInfo, initialInvoiceNumber: string)
         paidAmount: 0,
         paidInFull: false,
         paymentMode: "cash",
+        payments: [],
         notes: "",
     };
 }
@@ -412,7 +427,8 @@ export function SaleProvider({ children, store, initialInvoiceNumber }: SaleProv
     const roundOff = state.autoRoundOff ? round2(Math.round(preRound) - preRound) : round2(state.roundOffManual);
     const grandTotal = round2(preRound + roundOff);
     // "Paid in full" checkbox: paid always equals the current grand total.
-    const paidAmount = state.paidInFull ? grandTotal : round2(Math.max(0, state.paidAmount));
+    const splitTotal = state.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const paidAmount = state.paidInFull ? grandTotal : state.payments.length > 0 ? round2(splitTotal) : round2(Math.max(0, state.paidAmount));
     const dueAmount = round2(Math.max(0, grandTotal - paidAmount));
 
     const lineCount = state.lines.length;
@@ -609,6 +625,10 @@ export type SaleAction =
     | { type: "SET_PAID_AMOUNT"; payload: number }
     | { type: "SET_PAID_IN_FULL"; payload: boolean }
     | { type: "SET_PAYMENT_MODE"; payload: PaymentMode }
+    | { type: "SET_PAYMENTS"; payload: PaymentSplit[] }
+    | { type: "ADD_PAYMENT"; payload: PaymentSplit }
+    | { type: "UPDATE_PAYMENT"; payload: { id: string; patch: Partial<PaymentSplit> } }
+    | { type: "REMOVE_PAYMENT"; payload: string }
     | { type: "SET_NOTES"; payload: string }
     | { type: "SET_INVOICE_DATE"; payload: string }
     | { type: "HYDRATE"; payload: SaleState }
@@ -806,6 +826,18 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
             return { ...state, paidInFull: action.payload };
         case "SET_PAYMENT_MODE":
             return { ...state, paymentMode: action.payload };
+        case "SET_PAYMENTS":
+            return { ...state, payments: action.payload, paidInFull: false };
+        case "ADD_PAYMENT":
+            return { ...state, payments: [...state.payments, action.payload], paidInFull: false };
+        case "UPDATE_PAYMENT":
+            return {
+                ...state,
+                payments: state.payments.map((p) => (p.id === action.payload.id ? { ...p, ...action.payload.patch } : p)),
+                paidInFull: false,
+            };
+        case "REMOVE_PAYMENT":
+            return { ...state, payments: state.payments.filter((p) => p.id !== action.payload), paidInFull: false };
         case "SET_NOTES":
             return { ...state, notes: action.payload };
         case "SET_INVOICE_DATE":
@@ -830,6 +862,16 @@ export function saleReducer(state: SaleState, action: SaleAction): SaleState {
                 invoiceNumber: state.invoiceNumber,
                 idempotencyKey: p.idempotencyKey || generateUuid(),
                 paidInFull: p.paidInFull ?? false,
+                payments: Array.isArray(p.payments)
+                    ? p.payments.map((sp: any) => ({
+                        id: sp.id ?? Math.random().toString(36).slice(2),
+                        mode: sp.mode ?? "cash",
+                        amount: Number(sp.amount) || 0,
+                        reference: sp.reference ?? undefined,
+                        purchase_order_id: sp.purchase_order_id ?? undefined,
+                        locked: sp.mode === "buyback",
+                    }))
+                    : [],
             };
         }
         case "CLEAR": {
@@ -880,6 +922,13 @@ export interface SubmitPayload {
     due_amount: number;
     payment_status: "paid" | "partial" | "unpaid";
     payment_mode: PaymentMode;
+    /** Split tender rows — empty means legacy single-mode. */
+    payments?: Array<{
+        mode: string;
+        amount: number;
+        reference?: string | null;
+        purchase_order_id?: number | null;
+    }>;
     notes: string | null;
     lines: SubmitLine[];
 }
@@ -893,11 +942,20 @@ export function buildSalePayload(
     grandTotal: number,
     dueAmount: number
 ): SubmitPayload {
-    const paid = state.paidInFull ? round2(grandTotal) : round2(Math.max(0, state.paidAmount));
+    // Same paid logic as the SaleProvider: splits win over the legacy manual field.
+    const splitTotal = state.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const paid = state.paidInFull ? round2(grandTotal) : state.payments.length > 0 ? round2(splitTotal) : round2(Math.max(0, state.paidAmount));
     const paymentStatus: "paid" | "partial" | "unpaid" =
         dueAmount <= 0.009 ? "paid" : paid > 0 ? "partial" : "unpaid";
 
     if (!state.party) throw new Error("A party is required to complete the sale.");
+
+    const payloadPayments = state.payments.map((p) => ({
+        mode: p.mode,
+        amount: round2(p.amount),
+        reference: p.reference?.trim() || null,
+        purchase_order_id: p.purchase_order_id ?? null,
+    }));
 
     return {
         idempotency_key: state.idempotencyKey,
@@ -917,6 +975,7 @@ export function buildSalePayload(
         due_amount: round2(dueAmount),
         payment_status: paymentStatus,
         payment_mode: state.paymentMode,
+        payments: payloadPayments,
         notes: state.notes.trim() || null,
         lines: computedLines.map((l) => ({
             product_variant_id: l.product_variant_id,

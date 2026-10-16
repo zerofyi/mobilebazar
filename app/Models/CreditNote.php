@@ -24,6 +24,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'reason',
     'status',
     'notes',
+    'idempotency_key',
     'created_by',
 ])]
 class CreditNote extends Model

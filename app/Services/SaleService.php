@@ -112,7 +112,7 @@ final class SaleService
         }
     }
 
-    private function createSale(Store $store, User $user, array $data): Invoice
+    public function createSale(Store $store, User $user, array $data): Invoice
     {
         $invoiceDate = Carbon::parse($data['invoice_date']);
 
@@ -130,8 +130,8 @@ final class SaleService
         // 1. Invoice number (atomic per-store reservation)
         $invoiceNumber = $this->reserveInvoiceNumber($store->id);
 
-        // 2-4. Lock snapshots, build costings, evaluate fiscals.
-        [$evaluated, $snapshots, $paid, $due] = $this->prepareSalePosting($store, $data, $invoiceNumber);
+        // 2-4. Lock snapshots, build costings, evaluate fiscals, normalize payments.
+        [$evaluated, $snapshots, $paid, $due, $payments, $status] = $this->prepareSalePosting($store, $data, $invoiceNumber);
 
         // 5. Header — evaluated (authoritative) totals are stored, not the preview.
         $invoice = Invoice::create([
@@ -153,18 +153,21 @@ final class SaleService
             'grand_total'     => $evaluated['grand_total'],
             'paid_amount'     => $paid,
             'due_amount'      => $due,
-            'payment_status'  => $data['payment_status'],
-            'payment_mode'    => $data['payment_mode'],
+            'payment_status'  => $status,
+            'payment_mode'    => $this->dominantPaymentMode($payments),
             'invoice_type'    => $data['invoice_type'],
             'notes'           => $data['notes'] ?? null,
             'created_by'      => $user->id,
         ]);
 
+        // 5b. Payment breakdown — one row per mode used.
+        $this->storeInvoicePayments($invoice, $payments, $user);
+
         // 6. Persist rows + relieve stock.
         $this->postSaleLines($store, $user, $invoice, $data, $evaluated, $snapshots);
 
         // 7. Journal + summaries LAST (summary row locks held for shortest time).
-        $this->postSaleFinancials($store, $user, $invoice, $data, $evaluated, $paid, $due);
+        $this->postSaleFinancials($store, $user, $invoice, $data, $evaluated, $paid, $due, $payments);
 
         return $invoice;
     }
@@ -189,10 +192,94 @@ final class SaleService
         $evaluated = $this->gst->evaluate($store, $data, $costings);
         $this->assertClientTotalsAgree($invoiceNumber, $data, $evaluated);
 
-        $paid = $this->r2($data['paid_amount']);
-        $due  = $this->r2($evaluated['grand_total'] - $paid);
+        // Payments: the splits are the truth; paid is their sum. Server derives
+        // the status — never trust the client's payment_status.
+        $payments = $this->normalizePayments($data);
+        $paid = $this->r2(array_sum(array_column($payments, 'amount')));
+        $clientPaid = $this->r2($data['paid_amount'] ?? 0);
+        if (abs($paid - $clientPaid) > 0.011) {
+            throw ValidationException::withMessages([
+                'paid_amount' => 'Payment splits total ' . number_format($paid, 2) . ' but paid amount is ' . number_format($clientPaid, 2) . '.',
+            ]);
+        }
 
-        return [$evaluated, $snapshots, $paid, $due];
+        $due    = $this->r2($evaluated['grand_total'] - $paid);
+        $status = $due <= 0.009 ? 'paid' : ($paid > 0.009 ? 'partial' : 'unpaid');
+
+        return [$evaluated, $snapshots, $paid, $due, $payments, $status];
+    }
+
+    /**
+     * Normalize the payment splits. Back-compat: a lone paid_amount/payment_mode
+     * without splits becomes a single split.
+     *
+     * @return list<array{mode: string, amount: float, reference: ?string, purchase_order_id: ?int}>
+     */
+    private function normalizePayments(array $data): array
+    {
+        $raw = $data['payments'] ?? [];
+        if ($raw === [] && (float) ($data['paid_amount'] ?? 0) > 0) {
+            $raw = [[
+                'mode'   => $data['payment_mode'] ?? 'cash',
+                'amount' => (float) $data['paid_amount'],
+            ]];
+        }
+
+        $out = [];
+        foreach ($raw as $p) {
+            $amount = $this->r2($p['amount'] ?? 0);
+            if ($amount <= 0) {
+                continue;
+            }
+            $out[] = [
+                'mode'              => strtolower((string) ($p['mode'] ?? 'cash')),
+                'amount'            => $amount,
+                'reference'         => isset($p['reference']) && trim((string) $p['reference']) !== '' ? trim((string) $p['reference']) : null,
+                'purchase_order_id' => ! empty($p['purchase_order_id']) ? (int) $p['purchase_order_id'] : null,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Display-mode cache for invoices.payment_mode: dominant single mode, or
+     * 'split' when more than one mode was used.
+     */
+    private function dominantPaymentMode(array $payments): string
+    {
+        if ($payments === []) {
+            return 'cash';
+        }
+        $byMode = [];
+        foreach ($payments as $p) {
+            $byMode[$p['mode']] = ($byMode[$p['mode']] ?? 0) + $p['amount'];
+        }
+        if (count($byMode) === 1) {
+            return (string) array_key_first($byMode);
+        }
+        arsort($byMode);
+
+        return 'split';
+    }
+
+    /**
+     * Persist the payment breakdown rows for an invoice.
+     *
+     * @param list<array{mode: string, amount: float, reference: ?string, purchase_order_id: ?int}> $payments
+     */
+    private function storeInvoicePayments(Invoice $invoice, array $payments, User $user): void
+    {
+        foreach ($payments as $p) {
+            $invoice->payments()->create([
+                'uuid'              => Str::uuid()->toString(),
+                'payment_mode'      => $p['mode'],
+                'amount'            => $p['amount'],
+                'reference'         => $p['reference'],
+                'purchase_order_id' => $p['purchase_order_id'],
+                'created_by'        => $user->id,
+            ]);
+        }
     }
 
     /**
@@ -261,7 +348,10 @@ final class SaleService
     /**
      * Journal + summaries. $journalSuffix (e.g. '-R1') marks re-posts after an edit.
      */
-    private function postSaleFinancials(Store $store, User $user, Invoice $invoice, array $data, array $evaluated, float $paid, float $due, ?string $journalSuffix = null): void
+    /**
+     * @param list<array{mode: string, amount: float, reference: ?string, purchase_order_id: ?int}> $payments
+     */
+    private function postSaleFinancials(Store $store, User $user, Invoice $invoice, array $data, array $evaluated, float $paid, float $due, array $payments, ?string $journalSuffix = null): void
     {
         $this->journal->post($invoice, $store, $user, [
             'subtotal'        => $evaluated['subtotal'],
@@ -272,9 +362,9 @@ final class SaleService
             'grand_total'     => $evaluated['grand_total'],
             'paid_amount'     => $paid,
             'due_amount'      => $due,
-        ], $evaluated['cogs_total'], (string) $data['payment_mode'], (bool) $data['is_intra_state'], $journalSuffix);
+        ], $evaluated['cogs_total'], $payments, (bool) $data['is_intra_state'], $journalSuffix);
 
-        $this->summaries->record(SummaryDeltaFactory::forSale($store->id, $data, $evaluated));
+        $this->summaries->record(SummaryDeltaFactory::forSale($store->id, $data, $evaluated, $payments));
     }
 
     /*
@@ -342,7 +432,7 @@ final class SaleService
                 $this->reverseSale($store, $user, $invoice, "Sale {$invoice->invoice_number} edited (R{$newRevision})");
 
                 // 2-4. Re-evaluate the new payload against live (restored) stock.
-                [$evaluated, $snapshots, $paid, $due] = $this->prepareSalePosting($store, $data, $invoice->invoice_number);
+                [$evaluated, $snapshots, $paid, $due, $payments, $status] = $this->prepareSalePosting($store, $data, $invoice->invoice_number);
 
                 // 5. Update the header. Identity stays: same id, uuid, identity,
                 //    invoice_number and invoice_date. Commercial terms change.
@@ -359,8 +449,8 @@ final class SaleService
                     'grand_total'          => $evaluated['grand_total'],
                     'paid_amount'          => $paid,
                     'due_amount'           => $due,
-                    'payment_status'       => $data['payment_status'],
-                    'payment_mode'         => $data['payment_mode'],
+                    'payment_status'       => $status,
+                    'payment_mode'         => $this->dominantPaymentMode($payments),
                     'invoice_type'         => $data['invoice_type'],
                     'notes'                => $data['notes'] ?? null,
                     'revision'             => $newRevision,
@@ -370,12 +460,15 @@ final class SaleService
                     'edit_idempotency_key' => $key,
                 ]);
 
+                // 5b. Fresh payment breakdown (reverseSale deleted the old rows).
+                $this->storeInvoicePayments($invoice, $payments, $user);
+
                 // 6. New rows + stock relief.
                 $this->postSaleLines($store, $user, $invoice->fresh(), $data, $evaluated, $snapshots);
 
                 // 7. Journal (suffixed entry numbers — the originals still exist)
                 //    + summaries from the new payload.
-                $this->postSaleFinancials($store, $user, $invoice->fresh(), $data, $evaluated, $paid, $due, '-R' . $newRevision);
+                $this->postSaleFinancials($store, $user, $invoice->fresh(), $data, $evaluated, $paid, $due, $payments, '-R' . $newRevision);
 
                 return $invoice->fresh();
             }, self::TX_ATTEMPTS);
@@ -514,6 +607,75 @@ final class SaleService
      * Reverse a posted sale completely, inside the caller's transaction.
      * Driven by RECORDED allocations — nothing is recomputed.
      */
+    /**
+     * Record a later collection against a partial/unpaid sale.
+     * Appends a payment split, updates paid/due/status, posts the
+     * collection journal (Dr mode account / Cr receivables) and records
+     * the collected bucket in the summaries.
+     */
+    public function collectPayment(Store $store, User $user, Invoice $invoice, array $payment): Invoice
+    {
+        return DB::transaction(function () use ($store, $user, $invoice, $payment) {
+            $invoice = Invoice::where('store_id', $store->id)
+                ->where('id', $invoice->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $amount = $this->r2($payment['amount'] ?? 0);
+            if ($amount <= 0) {
+                throw ValidationException::withMessages(['amount' => 'Collection amount must be positive.']);
+            }
+
+            $due = (float) $invoice->due_amount;
+            if ($due <= 0.009) {
+                throw ValidationException::withMessages(['amount' => 'This invoice has no due amount.']);
+            }
+            if ($amount - $due > 0.011) {
+                throw ValidationException::withMessages(['amount' => 'Collection cannot exceed the due amount of ' . number_format($due, 2) . '.']);
+            }
+
+            if ($this->summaries->isMonthLocked($store->id, now()->format('Y-m'))) {
+                throw MonthLockedException::for($store->id, now()->format('Y-m'));
+            }
+
+            $mode = strtolower((string) ($payment['mode'] ?? 'cash'));
+            $reference = isset($payment['reference']) && trim((string) $payment['reference']) !== ''
+                ? trim((string) $payment['reference'])
+                : null;
+
+            $invoice->payments()->create([
+                'uuid'         => Str::uuid()->toString(),
+                'payment_mode' => $mode,
+                'amount'       => $amount,
+                'reference'    => $reference,
+                'created_by'   => $user->id,
+            ]);
+
+            $paid = $this->r2((float) $invoice->paid_amount + $amount);
+            $newDue = $this->r2((float) $invoice->grand_total - $paid);
+            $invoice->update([
+                'paid_amount'    => $paid,
+                'due_amount'     => $newDue,
+                'payment_status' => $newDue <= 0.009 ? 'paid' : 'partial',
+                'payment_mode'   => $this->dominantPaymentMode(
+                    $invoice->payments()->get(['payment_mode', 'amount'])
+                        ->map(fn ($p) => ['mode' => $p->payment_mode, 'amount' => (float) $p->amount])
+                        ->all()
+                ),
+            ]);
+
+            $this->journal->postCollection($invoice, $store, $user, $mode, $amount, $reference);
+            $this->summaries->record(SummaryDeltaFactory::forCollection($store->id, now()->toDateString(), $mode, $amount));
+
+            Log::info('Sale collection recorded', [
+                'store_id' => $store->id, 'invoice_id' => $invoice->id,
+                'mode' => $mode, 'amount' => $amount,
+            ]);
+
+            return $invoice->fresh();
+        }, self::TX_ATTEMPTS);
+    }
+
     private function reverseSale(Store $store, User $user, Invoice $invoice, string $reason): void
     {
         // 1. Journals — the originals stay; REV- mirror entries are posted.
@@ -560,6 +722,10 @@ final class SaleService
             $item->batchAllocations()->delete();
             $item->delete();
         }
+
+        // Payment breakdown rows are reversed with the sale; the edit re-post
+        // writes fresh ones (deleteSale relies on invoice cascade).
+        $invoice->payments()->delete();
     }
 
     /**

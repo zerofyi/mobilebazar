@@ -1,10 +1,8 @@
-import React, { useCallback, useState } from "react";
+import React, { useState, useCallback } from "react";
 import { Head, Link, router } from "@inertiajs/react";
 import {
     ChevronRight, ArrowLeft, Printer, UserRound, Phone, BadgeCheck,
-    Package, Smartphone, Boxes,
-    Pencil,
-    Trash2,
+    Package, Smartphone, Boxes, Undo2, Pencil, Trash2,
 } from "lucide-react";
 import { dashboard } from "@/routes";
 import app from "@/routes/app";
@@ -18,6 +16,7 @@ import { FormatAmount } from "@/components/special/format-amount";
 import { useFlashToast } from "@/hooks/use-flash-toast";
 import { usePermissions } from "@/hooks/user-permissions";
 import SecurityPinModal from "@/components/SecurityPinModal";
+import CollectPaymentModal from "./CollectPaymentModal";
 
 // ─── Types (serialized by SaleEntryController@show) ──────────────────────────
 
@@ -69,6 +68,7 @@ export interface ShowInvoice {
     is_intra_state: boolean;
     payment_status: "paid" | "partial" | "unpaid" | string;
     payment_mode: string | null;
+    payments: { id: number; payment_mode: string; amount: number; reference: string | null; purchase_order_id: number | null }[];
     subtotal: number;
     tax_amount: number;
     discount_amount: number;
@@ -105,6 +105,7 @@ export default function SaleShow({ invoice }: Props) {
     const [pinOpen, setPinOpen] = useState(false);
     const [pinError, setPinError] = useState<string | null>(null);
     const [deleting, setDeleting] = useState(false);
+    const [collectOpen, setCollectOpen] = useState(false);
 
     // Delete is PIN-gated: store PIN -> delete request (stock is restored by the backend).
     const handleDelete = useCallback(() => {
@@ -158,6 +159,14 @@ export default function SaleShow({ invoice }: Props) {
                         </Link>
                         <Link href={app.sales.print.url(invoice.uuid)}>
                             <Button><Printer className="size-4 mr-1.5" /> Print Invoice</Button>
+                        </Link>
+                        {invoice.due_amount > 0.009 && (
+                            <Button variant="outline" onClick={() => setCollectOpen(true)}>
+                                <BadgeCheck className="size-4 mr-1.5" /> Collect ₹{invoice.due_amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                            </Button>
+                        )}
+                        <Link href={`/app/sales/${invoice.uuid}/returns/create`}>
+                            <Button variant="outline"><Undo2 className="size-4 mr-1.5" /> Return</Button>
                         </Link>
                         {can('sales.update') && (
                             <Link href={`/app/sales/${invoice.uuid}/edit`}>
@@ -227,6 +236,25 @@ export default function SaleShow({ invoice }: Props) {
                             </dl>
                         </CardContent>
                     </Card>
+                    {invoice.payments && invoice.payments.length > 0 && (
+                        <Card>
+                            <CardHeader className="pb-2"><CardTitle className="text-sm">Payments ({invoice.payments.length})</CardTitle></CardHeader>
+                            <CardContent className="text-sm">
+                                <dl className="space-y-1">
+                                    {invoice.payments.map((p) => (
+                                        <div key={p.id} className="flex justify-between">
+                                            <dt className="text-muted-foreground capitalize">
+                                                {p.payment_mode}
+                                                {p.reference && <span className="ml-1 text-xs text-muted-foreground/70">· {p.reference}</span>}
+                                                {p.payment_mode === "buyback" && p.purchase_order_id && <span className="ml-1 text-xs text-muted-foreground/70">· bill linked</span>}
+                                            </dt>
+                                            <dd className="tabular-nums">₹<FormatAmount amount={p.amount} /></dd>
+                                        </div>
+                                    ))}
+                                </dl>
+                            </CardContent>
+                        </Card>
+                    )}
                 </div>
 
                 <Card className="mt-4">
@@ -294,6 +322,13 @@ export default function SaleShow({ invoice }: Props) {
                 </Card>
             </div>
 
+            <CollectPaymentModal
+                open={collectOpen}
+                onClose={() => setCollectOpen(false)}
+                invoiceUuid={invoice.uuid}
+                invoiceNumber={invoice.invoice_number}
+                dueAmount={invoice.due_amount}
+            />
             <SecurityPinModal
                 open={pinOpen}
                 onOpenChange={setPinOpen}

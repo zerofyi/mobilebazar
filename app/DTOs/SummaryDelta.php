@@ -23,6 +23,7 @@ final readonly class SummaryDelta
         'total_sales_serialized', 'total_sales_non_serialized',
         'total_refunds', 'total_tax_collected', 'total_expenses', 'total_discounts',
         'cash_collected', 'upi_collected', 'card_collected', 'bank_collected',
+        'buyback_adjusted', 'total_payables',
         'total_loan_given', 'total_emi_collected', 'gross_profit', 'net_profit',
     ];
 
@@ -38,6 +39,7 @@ final readonly class SummaryDelta
         'total_purchases', 'new_purchases', 'used_purchases',
         'total_refunds', 'total_discounts', 'total_tax_collected',
         'total_expenses', 'total_loan_given', 'total_emi_collected',
+        'buyback_adjusted', 'total_payables',
         'gross_profit', 'net_profit',
     ];
 

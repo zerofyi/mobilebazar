@@ -91,8 +91,17 @@ class StoreSaleRequest extends FormRequest
             'due_amount'      => ['required', 'numeric', 'min:0'],
 
             // ── Payment ───────────────────────────────────────────────────
-            'payment_status' => ['required', Rule::in(['paid', 'partial', 'unpaid'])],
-            'payment_mode'   => ['required', Rule::in(['cash', 'upi', 'neft', 'cheque', 'card', 'bank'])],
+            // Payment breakdown: one entry per mode used on this invoice.
+            // When omitted, a single split is derived from paid_amount/payment_mode.
+            'payments'                     => ['nullable', 'array', 'max:10'],
+            'payments.*.mode'              => ['required_with:payments', 'string', Rule::in(['cash', 'upi', 'neft', 'rtgs', 'imps', 'cheque', 'card', 'credit_card', 'debit_card', 'bank', 'buyback'])],
+            'payments.*.amount'            => ['required_with:payments', 'numeric', 'min:0.01'],
+            'payments.*.reference'         => ['nullable', 'string', 'max:100'],
+            'payments.*.purchase_order_id' => ['nullable', 'integer', 'exists:purchase_orders,id'],
+            // payment_status is accepted but IGNORED — the server derives it
+            // from paid/due so a tampered client can never store a lie.
+            'payment_status' => ['nullable', Rule::in(['paid', 'partial', 'unpaid'])],
+            'payment_mode'   => ['nullable', Rule::in(['cash', 'upi', 'neft', 'cheque', 'card', 'bank', 'split', 'buyback'])],
 
             // ── Misc ──────────────────────────────────────────────────────
             'notes' => ['nullable', 'string', 'max:1000'],

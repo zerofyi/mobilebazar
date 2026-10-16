@@ -1,4 +1,4 @@
-import { FolderTree, GalleryHorizontal, Handshake, Landmark, LayoutGrid, ListChecks, MonitorCog, Package, Settings, ShoppingCart, Sliders, Store, Tag, User, ListClock, ShoppingCartPlus, ShoppingCartMinus, FilePlus2, FileMinus2, Wallet, CheckCircle2, AlertTriangle, CalendarCheck2, CalendarDays, Boxes, ScanSearch } from 'lucide-react';
+import { FolderTree, GalleryHorizontal, Handshake, Landmark, LayoutGrid, ListChecks, MonitorCog, Package, Settings, ShoppingCart, Sliders, Store, Tag, User, ListClock, ShoppingCartPlus, ShoppingCartMinus, FilePlus2, FileMinus2, Wallet, ArrowLeftRight, CheckCircle2, AlertTriangle, CalendarCheck2, CalendarDays, Boxes, ScanSearch } from 'lucide-react';
 
 import type { NavItemGroup, RoleNavigation, UserRole } from '@/types';
 
@@ -122,6 +122,18 @@ export const COMMON_NAV: RoleNavigation = {
                     href: app.sales.index.url(),
                     icon: ListClock,
                     permission: 'sales.index',
+                },
+                {
+                    title: 'Credit Notes',
+                    href: '/app/credit-notes',
+                    icon: FileMinus2,
+                    permission: 'sales.index',
+                },
+                {
+                    title: 'Buyback',
+                    href: '/app/buyback/create',
+                    icon: ArrowLeftRight,
+                    permission: 'sales.create',
                 },
 
             ],

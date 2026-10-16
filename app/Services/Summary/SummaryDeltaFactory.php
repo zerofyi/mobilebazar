@@ -79,28 +79,42 @@ final class SummaryDeltaFactory
      *
      * @param array{rows: list<array{line_total: float, qty: int, device_condition: ?string, stock_unit_id: ?int}>, subtotal: float, tax_amount: float, discount_amount: float, round_off: float, grand_total: float, cogs_total: float} $evaluated
      */
-    public static function forSale(int $storeId, array $data, array $evaluated): SummaryDelta
+    /**
+     * @param list<array{mode: string, amount: float}> $payments per-mode splits
+     */
+    public static function forSale(int $storeId, array $data, array $evaluated, array $payments = []): SummaryDelta
     {
         $new = $used = $serialized = $bulk = 0.0;
         $items = 0;
 
-        $paymentMode = strtolower((string) ($data['payment_mode'] ?? 'cash'));
-        $paid        = (float) ($data['paid_amount'] ?? 0);
-
         $paidBuckets = [
-            'cash_collected' => 0.0,
-            'upi_collected'  => 0.0,
-            'card_collected' => 0.0,
-            'bank_collected' => 0.0,
+            'cash_collected'   => 0.0,
+            'upi_collected'    => 0.0,
+            'card_collected'   => 0.0,
+            'bank_collected'   => 0.0,
+            'buyback_adjusted' => 0.0,
         ];
 
-        $bucketKey = match ($paymentMode) {
-            'cash'                         => 'cash_collected',
-            'upi'                          => 'upi_collected',
-            'card', 'credit_card', 'debit_card' => 'card_collected',
-            default                        => 'bank_collected',
-        };
-        $paidBuckets[$bucketKey] = $paid;
+        // Back-compat: callers that still pass a scalar mode/amount.
+        if ($payments === [] && (float) ($data['paid_amount'] ?? 0) > 0) {
+            $payments = [[
+                'mode'   => (string) ($data['payment_mode'] ?? 'cash'),
+                'amount' => (float) $data['paid_amount'],
+            ]];
+        }
+
+        foreach ($payments as $p) {
+            $mode = strtolower((string) ($p['mode'] ?? 'cash'));
+            $amt  = (float) ($p['amount'] ?? 0);
+            $bucketKey = match ($mode) {
+                'cash'                            => 'cash_collected',
+                'upi'                             => 'upi_collected',
+                'card', 'credit_card', 'debit_card' => 'card_collected',
+                'buyback'                         => 'buyback_adjusted',
+                default                           => 'bank_collected',
+            };
+            $paidBuckets[$bucketKey] += $amt;
+        }
 
         foreach ($evaluated['rows'] ?? [] as $row) {
             $rowTotal = (float) ($row['line_total'] ?? 0);
@@ -128,6 +142,78 @@ final class SummaryDeltaFactory
             'invoice_count'              => 1,
             'invoice_items_count'        => $items,
         ], $paidBuckets));
+    }
+
+    /**
+     * Later collection against a partial/unpaid sale: only the collected
+     * buckets move. Sales totals were already recorded at billing time.
+     */
+    public static function forCollection(int $storeId, string $date, string $mode, float $amount): SummaryDelta
+    {
+        $bucketKey = match (strtolower($mode)) {
+            'cash'                              => 'cash_collected',
+            'upi'                               => 'upi_collected',
+            'card', 'credit_card', 'debit_card'  => 'card_collected',
+            'buyback'                           => 'buyback_adjusted',
+            default                             => 'bank_collected',
+        };
+
+        return new SummaryDelta($storeId, $date, [$bucketKey => $amount]);
+    }
+
+    /**
+     * Purchase return: negate the returned slice of the original purchase.
+     * The original PO is never rewritten — the debit note is its own dated document.
+     */
+    public static function forDebitNote(int $storeId, string $date, float $subtotal, float $tax, float $grand, int $items): SummaryDelta
+    {
+        return new SummaryDelta($storeId, $date, [
+            'total_purchases' => -$grand,
+            'total_payables'  => -$grand,
+            'total_refunds'   => $grand,
+            'return_count'    => 1,
+            'return_items_count' => $items,
+        ]);
+    }
+
+    /**
+     * Supplier payment: the payable goes down. Cash/bank movement is tracked
+     * in the collected buckets as negative (money out).
+     */
+    public static function forSupplierPayment(int $storeId, string $date, string $mode, float $amount): SummaryDelta
+    {
+        $bucketKey = match (strtolower($mode)) {
+            'cash'   => 'cash_collected',
+            'upi'    => 'upi_collected',
+            'card', 'credit_card', 'debit_card' => 'card_collected',
+            default  => 'bank_collected',
+        };
+
+        return new SummaryDelta($storeId, $date, [
+            'total_payables' => -$amount,
+            $bucketKey       => -$amount,
+        ]);
+    }
+
+    /**
+     * Sales return: negate the returned slice of the original sale and
+     * record the refund. The original sale row is never rewritten — the
+     * credit note is its own dated document.
+     *
+     * @param list<array{quantity: int, refund_total: float}> $lines
+     */
+    public static function forCreditNote(int $storeId, string $date, array $lines, float $subtotal, float $tax, float $grand): SummaryDelta
+    {
+        $items = array_sum(array_column($lines, 'quantity'));
+
+        return new SummaryDelta($storeId, $date, [
+            'total_sales'         => -$grand,
+            'total_tax_collected' => -$tax,
+            'total_refunds'       => $grand,
+            'return_count'        => 1,
+            'return_items_count'  => $items,
+            'gross_profit'        => -$grand,
+        ]);
     }
 
     /**

@@ -423,6 +423,7 @@ class SaleEntryController extends Controller
 
         $invoice = Invoice::with([
             'party',
+            'payments',
             'items.productVariant:id,product_id,variant_name,sku,selling_price,min_selling_price',
             'items.productVariant.product:id,name,hsn_code,tax_category_id',
             'items.productVariant.product.taxCategory:id,tax_percent',
@@ -528,6 +529,39 @@ class SaleEntryController extends Controller
                 'type'    => 'success',
                 'message' => "Sale {$invoice->invoice_number} deleted and its stock restored.",
             ]);
+    }
+
+    /**
+     * Record a later collection against a partial/unpaid sale.
+     * PIN-gated like edit/delete — money is moving.
+     */
+    public function collect(Request $request, string $sale): RedirectResponse
+    {
+        $user  = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+
+        abort_unless($store && $store->is_active, 403);
+
+        $data = $request->validate([
+            'security_pin' => ['required', 'string', 'size:6'],
+            'mode'         => ['required', 'string', Rule::in(['cash', 'upi', 'neft', 'rtgs', 'imps', 'cheque', 'card', 'credit_card', 'debit_card', 'bank'])],
+            'amount'       => ['required', 'numeric', 'min:0.01'],
+            'reference'    => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $invoice = Invoice::where('store_id', $store->id)->where('uuid', $sale)->firstOrFail();
+
+        try {
+            $this->verifySecurityPin($store, $data['security_pin']);
+            $this->sales->collectPayment($store, $user, $invoice, $data);
+        } catch (ValidationException $e) {
+            return back()->withErrors($e->errors())->withInput();
+        } catch (\App\Exceptions\AccountingException $e) {
+            return back()->withErrors(['amount' => $e->getMessage()])->withInput();
+        }
+
+        return back()->with('success', 'Payment of ₹' . number_format((float) $data['amount'], 2) . ' recorded.');
     }
 
     /**
@@ -668,6 +702,13 @@ class SaleEntryController extends Controller
             'paidAmount'      => (float) $invoice->paid_amount,
             'paidInFull'      => $invoice->payment_status === 'paid' && (float) $invoice->due_amount <= 0.009,
             'paymentMode'     => $invoice->payment_mode,
+            'payments'        => $invoice->payments->map(fn ($pay) => [
+                'id'                => (string) $pay->id,
+                'mode'              => $pay->payment_mode,
+                'amount'            => (float) $pay->amount,
+                'reference'         => $pay->reference,
+                'purchase_order_id' => $pay->purchase_order_id,
+            ])->values()->all(),
             'notes'           => $invoice->notes ?? '',
             'lines'           => $lines,
         ];
@@ -689,6 +730,7 @@ class SaleEntryController extends Controller
         $invoice = Invoice::with([
             'party',
             'createdBy:id,name',
+            'payments',
             'items.productVariant:id,product_id,variant_name,sku',
             'items.productVariant.product:id,hsn_code,is_serialized',
             'items.stockUnit:id,imei1,imei2,serial_number,device_condition,landed_cost,is_margin_scheme',
@@ -813,6 +855,13 @@ class SaleEntryController extends Controller
             'grand_total'     => (float) $inv->grand_total,
             'paid_amount'     => (float) $inv->paid_amount,
             'due_amount'      => (float) $inv->due_amount,
+            'payments'        => $inv->payments->map(fn ($pay) => [
+                'id'                => $pay->id,
+                'payment_mode'      => $pay->payment_mode,
+                'amount'            => (float) $pay->amount,
+                'reference'         => $pay->reference,
+                'purchase_order_id' => $pay->purchase_order_id,
+            ])->values()->all(),
             'created_at'      => $inv->created_at?->toIso8601String(),
             'created_by'      => $inv->createdBy?->name,
             'party'           => $this->partyCard($inv),

@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\BuybackController;
+use App\Http\Controllers\CreditNoteController;
 use App\Http\Controllers\PartySearchController;
 use App\Http\Controllers\AttributeController;
 use App\Http\Controllers\BannerController;
@@ -181,6 +183,22 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/{sale}/edit', [SaleEntryController::class, 'edit'])->name('edit');
         Route::put('/{sale}', [SaleEntryController::class, 'update'])->name('update');
         Route::delete('/{sale}', [SaleEntryController::class, 'destroy'])->name('destroy');
+        Route::post('/{sale}/collect', [SaleEntryController::class, 'collect'])->name('collect')->middleware('can:sales.update');
+        Route::get('/{sale}/returns/create', [CreditNoteController::class, 'create'])->name('returns.create')->middleware('can:sales.create');
+        Route::post('/{sale}/returns', [CreditNoteController::class, 'store'])->name('returns.store')->middleware('can:sales.create');
+    });
+
+    // ── Buyback (purchase + sale in one) ──
+    Route::prefix('buyback')->name('buyback.')->group(function () {
+        Route::get('/create', [BuybackController::class, 'create'])->name('create')->middleware('can:sales.create');
+        Route::get('/variants/search', [BuybackController::class, 'variantSearch'])->name('variants.search')->middleware('can:sales.create');
+        Route::post('/', [BuybackController::class, 'store'])->name('store')->middleware('can:sales.create');
+    });
+
+    // ── Credit notes (sales returns) ──
+    Route::prefix('credit-notes')->name('credit-notes.')->group(function () {
+        Route::get('/', [CreditNoteController::class, 'index'])->name('index')->middleware('can:sales.view');
+        Route::get('/{note}', [CreditNoteController::class, 'show'])->name('show')->middleware('can:sales.view');
     });
 
     // ── Supplier payments ──

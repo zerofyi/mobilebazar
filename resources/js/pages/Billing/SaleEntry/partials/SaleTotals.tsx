@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useSale, inr } from "../sale-context";
+import PaymentSplits from "./PaymentSplits";
 
 interface Props {
     onSubmit: () => void;
@@ -163,16 +164,20 @@ export default function SaleTotals({ onSubmit, onPark, isSubmitting, errors, isV
                             Paid ₹
                         </Label>
                     </div>
-                    <Input
-                        id="paid-amount" type="number" min={0}
-                        value={paidAmount || ""}
-                        placeholder="0"
-                        disabled={state.paidInFull}
-                        onChange={(e) => dispatch({ type: "SET_PAID_AMOUNT", payload: parseFloat(e.target.value) || 0 })}
-                        onFocus={(e) => e.target.select()}
-                        className="h-8 text-right text-sm disabled:opacity-70"
-                        aria-label="Paid amount"
-                    />
+                    {!state.paidInFull ? (
+                        <div className="flex-1">
+                            <PaymentSplits grandTotal={grandTotal} />
+                        </div>
+                    ) : (
+                        <Input
+                            id="paid-amount" type="number" min={0}
+                            value={paidAmount || ""}
+                            placeholder="0"
+                            disabled
+                            className="h-8 text-right text-sm disabled:opacity-70"
+                            aria-label="Paid amount"
+                        />
+                    )}
                     <span className={cn("text-sm font-semibold tabular-nums whitespace-nowrap", dueAmount > 0.009 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400")}>
                         Due ₹{inr(dueAmount)}
                     </span>

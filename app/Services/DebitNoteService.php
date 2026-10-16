@@ -16,6 +16,9 @@ use App\Models\StockUnit;
 use App\Models\Store;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Services\AccountingService;
+use App\Services\Summary\SummaryDeltaFactory;
+use App\Services\SummaryService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -26,6 +29,7 @@ final class DebitNoteService
 
     public function __construct(
         private readonly AccountingService $accounting,
+        private readonly SummaryService $summaries,
     ) {}
 
     /*
@@ -226,6 +230,13 @@ final class DebitNoteService
 
         // 6. Journal: Dr AP / Cr Inventory (base) / Cr ITC (tax reversal).
         $this->postJournal($dn, $store, $user, $po, $subtotal, $taxTotal, $grandTotal);
+
+        $this->summaries->record(
+            SummaryDeltaFactory::forDebitNote(
+                $store->id, $dn->debit_note_date, $subtotal, $taxTotal, $grandTotal,
+                array_sum(array_column($returnLines, 'quantity'))
+            )
+        );
 
         return $dn->fresh();
     }

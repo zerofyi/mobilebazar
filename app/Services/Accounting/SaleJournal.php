@@ -10,12 +10,15 @@ use App\Models\Invoice;
 use App\Models\Store;
 use App\Models\User;
 use App\Services\AccountingService;
+use Illuminate\Support\Str;
 
 /**
  * Builds the double-entry for a posted POS sale.
  *
  * Main entry (JE-<invoice_number>):
- *   Dr 1010/1020/1025/1026 (Cash/Bank/UPI/Card) = paid_amount   [if > 0]
+ *   Dr 1010/1020/1025/1026 (Cash/Bank/UPI/Card) = per-mode split [if > 0]
+ *   Dr 2010 Accounts Payable                    = buyback splits  [if > 0]
+ *       (a buyback settles the purchase payable created by the linked buyback bill)
  *   Dr 1030 Accounts Receivable                 = due_amount    [if > 0]
  *   Dr 4015 Sales Discounts Allowed             = discount_amount [if > 0] (contra-income)
  *   Cr 4010 Sales Revenue                       = subtotal + round_off
@@ -69,10 +72,11 @@ final class SaleJournal
      * @param array{subtotal: float, tax_amount: float, discount_amount: float, shipping_charge: float, round_off: float, grand_total: float, paid_amount: float, due_amount: float} $totals
      */
     /**
+     * @param list<array{mode: string, amount: float}> $payments per-mode payment splits
      * @param ?string $entrySuffix appended to entry numbers on re-posts
      *        (e.g. '-R1' after an edit) — the original entries still exist.
      */
-    public function post(Invoice $invoice, Store $store, User $user, array $totals, float $cogsTotal, string $paymentMode, bool $isIntraState, ?string $entrySuffix = null): void
+    public function post(Invoice $invoice, Store $store, User $user, array $totals, float $cogsTotal, array $payments, bool $isIntraState, ?string $entrySuffix = null): void
     {
         $subtotal = JournalEntryData::toPaise($totals['subtotal']);
         $tax      = JournalEntryData::toPaise($totals['tax_amount']);
@@ -97,13 +101,35 @@ final class SaleJournal
             throw AccountingException::overpaid($invoice->invoice_number);
         }
 
-        $mode    = strtolower($paymentMode);
-        $payCode = self::PAYMENT_ACCOUNTS[$mode] ?? '1020';
+        // Group splits by account: one debit line per payment mode.
+        // Buyback splits settle the linked purchase's payable (2010).
+        $byAccount = [];
+        foreach ($payments as $p) {
+            $mode = strtolower((string) ($p['mode'] ?? 'cash'));
+            $amt  = (int) round(((float) ($p['amount'] ?? 0)) * 100);
+            if ($amt <= 0) {
+                continue;
+            }
+            $code = $mode === 'buyback' ? '2010' : (self::PAYMENT_ACCOUNTS[$mode] ?? '1020');
+            if (! isset($byAccount[$code])) {
+                $byAccount[$code] = ['amount' => 0, 'modes' => []];
+            }
+            $byAccount[$code]['amount'] += $amt;
+            $byAccount[$code]['modes'][] = $mode;
+        }
+
+        $splitTotal = array_sum(array_column($byAccount, 'amount'));
+        if ($splitTotal !== $paid) {
+            throw AccountingException::saleTotalsMismatch($invoice->invoice_number, abs($splitTotal - $paid));
+        }
 
         $lines = [];
 
-        if ($paid > 0) {
-            $lines[] = ['account' => $payCode, 'debit' => $this->money($paid), 'memo' => 'Collected via ' . ucfirst($mode) . ' — ' . $invoice->invoice_number];
+        foreach ($byAccount as $code => $g) {
+            $label = (string) $code === '2010'
+                ? 'Buyback adjustment'
+                : 'Collected via ' . implode('+', array_map('ucfirst', array_unique($g['modes'])));
+            $lines[] = ['account' => $code, 'debit' => $this->money($g['amount']), 'memo' => $label . ' — ' . $invoice->invoice_number];
         }
         if ($due > 0) {
             $lines[] = ['account' => '1030', 'debit' => $this->money($due), 'memo' => 'Receivable — ' . $invoice->invoice_number];
@@ -146,6 +172,37 @@ final class SaleJournal
                 ],
             ));
         }
+    }
+
+    /**
+     * Later collection against a partial/unpaid sale.
+     *   Dr 1010/1020/1025/1026 (mode account) = amount
+     *   Cr 1030 Accounts Receivable           = amount
+     */
+    public function postCollection(Invoice $invoice, Store $store, User $user, string $mode, float $amount, ?string $reference = null): void
+    {
+        $paise = JournalEntryData::toPaise($amount);
+        if ($paise <= 0) {
+            throw new AccountingException('Collection amount must be positive.');
+        }
+
+        $code = $mode === 'buyback' ? '2010' : (self::PAYMENT_ACCOUNTS[strtolower($mode)] ?? '1020');
+        $memo = 'Collection — ' . ucfirst($mode) . ' — ' . $invoice->invoice_number
+            . ($reference ? ' (' . $reference . ')' : '');
+
+        $this->accounting->post(new JournalEntryData(
+            storeId: $store->id,
+            entryNumber: 'JE-COLL-' . $invoice->invoice_number . '-' . now()->format('His') . '-' . Str::random(4),
+            entryDate: now()->toDateString(),
+            referenceType: Invoice::class,
+            referenceId: $invoice->id,
+            narration: $memo,
+            createdBy: $user->id,
+            lines: [
+                ['account' => $code, 'debit' => $this->money($paise), 'memo' => $memo],
+                ['account' => '1030', 'credit' => $this->money($paise), 'memo' => 'Receivable settled — ' . $invoice->invoice_number],
+            ],
+        ));
     }
 
     private function money(int $paise): string

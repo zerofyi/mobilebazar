@@ -9,6 +9,9 @@ use App\Models\Payment;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\AccountingService;
+use App\Services\Summary\SummaryDeltaFactory;
+use App\Services\SummaryService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -46,7 +49,10 @@ final class SupplierPaymentService
         'card'   => '1026',
     ];
 
-    public function __construct(private readonly AccountingService $accounting) {}
+    public function __construct(
+        private readonly AccountingService $accounting,
+        private readonly SummaryService $summaries,
+    ) {}
 
     /**
      * @param array{
@@ -125,6 +131,9 @@ final class SupplierPaymentService
 
                 $this->postPaymentJournal($store, $user, $po, $paise, $mode, $payCode, $paidAt, $notes);
                 $this->applyToPurchase($po, $paise);
+                $this->summaries->record(SummaryDeltaFactory::forSupplierPayment(
+                    $store->id, substr($paidAt, 0, 10), $mode, $paise / 100
+                ));
 
                 $payments[] = $payment;
             }
