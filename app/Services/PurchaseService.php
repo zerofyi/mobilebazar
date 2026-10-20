@@ -442,6 +442,19 @@ final class PurchaseService
             ->where('reference_type', PurchaseOrder::class)
             ->where('reference_id', $po->id)
             ->where('entry_number', 'not like', 'REV-%')
+            // Skip entries that already have a reversal: on a 2nd edit/delete
+            // the deterministic 'REV-…' number would otherwise violate the
+            // (store_id, entry_number) unique index — and re-reversing would
+            // be wrong accounting anyway.
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('journal_entries as rev')
+                    ->whereColumn('rev.reverses_journal_id', 'journal_entries.id');
+            })
+            // Supplier payments are their own documents: an edit must not
+            // touch them. (Delete uses reversePurchase, which voids all PO
+            // journals by design.)
+            ->where('entry_number', 'not like', 'JE-SUPPAY-%')
             ->lockForUpdate()
             ->get();
 
@@ -712,6 +725,12 @@ final class PurchaseService
             ->where('reference_type', PurchaseOrder::class)
             ->where('reference_id', $po->id)
             ->where('entry_number', 'not like', 'REV-%')
+            // Skip entries that already have a reversal (see reverseFinancials).
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('journal_entries as rev')
+                    ->whereColumn('rev.reverses_journal_id', 'journal_entries.id');
+            })
             ->lockForUpdate()
             ->get();
 

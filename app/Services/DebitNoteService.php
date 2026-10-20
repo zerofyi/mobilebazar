@@ -238,6 +238,20 @@ final class DebitNoteService
             )
         );
 
+        // 7. Settle the PO itself: the journal debits AP for the return value,
+        //    so the PO's outstanding due must drop by the same amount (floor
+        //    0) — otherwise Supplier Payments would let staff pay the
+        //    returned goods' value to the supplier a second time. Paid stays
+        //    as the historical money-out record; if the PO was already fully
+        //    paid, the excess is a supplier receivable in the GL only.
+        $newDue = max(0.0, round((float) $po->due_amount - $grandTotal, 2));
+        $po->update([
+            'due_amount'     => $newDue,
+            'payment_status' => $newDue <= 0.0
+                ? 'paid'
+                : ((float) $po->paid_amount > 0 ? 'partial' : 'unpaid'),
+        ]);
+
         return $dn->fresh();
     }
 

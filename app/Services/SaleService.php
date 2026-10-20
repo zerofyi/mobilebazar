@@ -684,6 +684,14 @@ final class SaleService
             ->where('reference_type', Invoice::class)
             ->where('reference_id', $invoice->id)
             ->where('entry_number', 'not like', 'REV-%')
+            // Skip entries that already have a reversal: a 2nd edit/delete
+            // would otherwise re-reverse the originals and collide on the
+            // deterministic 'REV-…' entry number (unique per store).
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('journal_entries as rev')
+                    ->whereColumn('rev.reverses_journal_id', 'journal_entries.id');
+            })
             ->lockForUpdate()
             ->get();
 
@@ -831,7 +839,15 @@ final class SaleService
             'cogs_total'      => $cogs,
         ];
 
-        return SummaryDeltaFactory::forSale($store->id, $data, $evaluated)->reversed();
+        // Reverse the per-mode buckets the payments were actually recorded
+        // in — the scalar back-compat path would negate the whole paid
+        // amount from one bucket and drift the collection buckets on
+        // split-paid sales.
+        $payments = $invoice->payments
+            ->map(fn ($p) => ['mode' => (string) $p->payment_mode, 'amount' => (float) $p->amount])
+            ->all();
+
+        return SummaryDeltaFactory::forSale($store->id, $data, $evaluated, $payments)->reversed();
     }
 
     /*
