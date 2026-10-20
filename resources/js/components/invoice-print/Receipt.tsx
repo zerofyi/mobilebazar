@@ -27,6 +27,7 @@ export default function Receipt({ invoice, store, m }: TemplateProps) {
                 <p className="text-center text-[12px] font-bold uppercase">{invoice.document_label}</p>
                 <div className="mt-1 flex justify-between"><span>No: {invoice.invoice_number}</span><span>{invoice.invoice_date}</span></div>
                 <p>To: {invoice.party_name}</p>
+                {invoice.party_address && <p className="whitespace-pre-line">{invoice.party_address}</p>}
                 {invoice.party_phone && <p>Ph: {invoice.party_phone}</p>}
                 {invoice.party_gstin && <p>GSTIN: {invoice.party_gstin}</p>}
                 {invoice.is_gst_billed && <p>POS: {m.placeOfSupply}</p>}

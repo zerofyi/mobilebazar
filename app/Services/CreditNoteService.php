@@ -90,6 +90,15 @@ final class CreditNoteService
                 throw ValidationException::withMessages(['refund_mode' => 'Refund mode must be cash or adjust.']);
             }
 
+            // A cash refund pays money back out — it can never exceed what the
+            // customer actually paid on this invoice. Anything above the paid
+            // amount has to settle against the outstanding due instead.
+            if ($refundMode === 'cash' && $grandTotal > (float) $invoice->paid_amount + 0.005) {
+                throw ValidationException::withMessages([
+                    'refund_mode' => 'Cash refund of ' . number_format($grandTotal, 2) . ' exceeds the amount paid on this invoice (' . number_format((float) $invoice->paid_amount, 2) . '). Use Adjust mode to settle the return against the due amount.',
+                ]);
+            }
+
             // 2. Reserve the credit note number (atomic).
             $cnNumber = $this->reserveCreditNoteNumber($store->id);
 
@@ -131,7 +140,23 @@ final class CreditNoteService
             $this->postJournal($cn, $store, $user, $invoice, $subtotal, $taxTotal, $grandTotal, $cogsTotal, $refundMode);
 
             // 5. Summaries: negate the sale's contribution, record the refund.
-            $this->summaries->record(SummaryDeltaFactory::forCreditNote($store->id, $cnDate, $returnLines, $subtotal, $taxTotal, $grandTotal));
+            $this->summaries->record(SummaryDeltaFactory::forCreditNote($store->id, $cnDate, $returnLines, $subtotal, $taxTotal, $grandTotal, $cogsTotal));
+
+            // 6. Settle the invoice itself. Adjust mode credits the receivable
+            //    in the journal (Cr 1030) — the invoice row must match, or the
+            //    bill keeps showing the full due and Collect Payment would
+            //    collect the adjusted amount a second time. Cash mode leaves
+            //    the invoice untouched: invoice_payments is the money-in
+            //    record and this credit note is the money-out record.
+            if ($refundMode === 'adjust') {
+                $newDue = max(0.0, $this->r2((float) $invoice->due_amount - $grandTotal));
+                $invoice->update([
+                    'due_amount'     => $newDue,
+                    'payment_status' => $newDue <= 0.0
+                        ? 'paid'
+                        : ((float) $invoice->paid_amount > 0 ? 'partial' : 'unpaid'),
+                ]);
+            }
 
             Log::info('Credit note issued', [
                 'store_id' => $store->id, 'credit_note_id' => $cn->id,

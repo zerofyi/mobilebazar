@@ -759,7 +759,7 @@ class SaleEntryController extends Controller
         abort_unless($store && $store->is_active, 403);
 
         $invoice = Invoice::with([
-            'party',
+            'party.address',
             'createdBy:id,name',
             'items.productVariant.product.taxCategory',
             'items.stockUnit:id,imei1,serial_number,device_condition',
@@ -855,6 +855,17 @@ class SaleEntryController extends Controller
             'grand_total'     => (float) $inv->grand_total,
             'paid_amount'     => (float) $inv->paid_amount,
             'due_amount'      => (float) $inv->due_amount,
+            'total_profit'    => round($inv->items->sum(function ($item) {
+                $unit = $item->stockUnit;
+                if ($unit) {
+                    return round(((float) $item->line_total - (float) $item->tax_amount) - ((float) $unit->landed_cost * (int) $item->quantity), 2);
+                }
+                if ($item->batchAllocations->isNotEmpty()) {
+                    $cost = $item->batchAllocations->sum(fn ($a) => (float) $a->unit_cost * (int) $a->quantity);
+                    return round(((float) $item->line_total - (float) $item->tax_amount) - $cost, 2);
+                }
+                return 0.0;
+            }), 2),
             'payments'        => $inv->payments->map(fn ($pay) => [
                 'id'                => $pay->id,
                 'payment_mode'      => $pay->payment_mode,
@@ -869,6 +880,21 @@ class SaleEntryController extends Controller
                 $tax = (float) $item->tax_amount;
                 $intra = (bool) $inv->is_intra_state;
                 $unit = $item->stockUnit;
+
+                $taxableValue = round((float) $item->line_total - $tax, 2);
+
+                // Cost basis for profit: serialized → the unit's landed cost;
+                // bulk → sum of batch allocations. Null when cost is unknown
+                // (manual lines) so the UI shows "—" instead of a fake zero.
+                $costTotal = null;
+                if ($unit) {
+                    $costTotal = (float) $unit->landed_cost * (int) $item->quantity;
+                } elseif ($item->batchAllocations->isNotEmpty()) {
+                    $costTotal = (float) $item->batchAllocations->sum(
+                        fn ($a) => (float) $a->unit_cost * (int) $a->quantity
+                    );
+                }
+                $profit = $costTotal === null ? null : round($taxableValue - $costTotal, 2);
 
                 return [
                     'id'               => $item->id,
@@ -887,6 +913,8 @@ class SaleEntryController extends Controller
                     'sgst_amount'      => $intra ? round($tax / 2, 2) : 0.0,
                     'igst_amount'      => $intra ? 0.0 : $tax,
                     'line_total'       => (float) $item->line_total,
+                    'cost_total'       => $costTotal === null ? null : round($costTotal, 2),
+                    'profit'           => $profit,
                     'is_margin_scheme' => (bool) $item->is_margin_scheme,
                     'units'            => $unit ? [[
                         'id'               => $unit->id,
@@ -905,6 +933,32 @@ class SaleEntryController extends Controller
                 ];
             })->values(),
         ];
+    }
+
+    /**
+     * Best printable address for the invoice party.
+     * Customer → the address_snapshot text (display_address prefers it and
+     * falls back to the structured address row). Supplier → no snapshot
+     * column exists, so the structured address formatted line is the best
+     * source.
+     */
+    private function partyPrintAddress(Invoice $inv): ?string
+    {
+        $party = $inv->party;
+
+        if (! $party) {
+            return null;
+        }
+
+        if ($party instanceof Customer) {
+            $addr = trim((string) $party->display_address);
+
+            return $addr !== '' ? $addr : null;
+        }
+
+        $addr = $party->address?->formatted_address;
+
+        return $addr !== null && trim($addr) !== '' ? $addr : null;
     }
 
     private function serializeForPrint(Invoice $inv): array
@@ -987,6 +1041,8 @@ class SaleEntryController extends Controller
             'party_phone'     => $party['phone'],
             'party_gstin'     => $partyGstin,
             'party_type'      => $party['type'],
+            'party_address'   => $this->partyPrintAddress($inv),
+            'party_state'     => $inv->party?->address?->state,
             'document_code'   => $document['code'],
             'document_label'  => $document['label'],
             'buyer_kind'      => $document['buyer_kind'],

@@ -202,7 +202,7 @@ final class SummaryDeltaFactory
      *
      * @param list<array{quantity: int, refund_total: float}> $lines
      */
-    public static function forCreditNote(int $storeId, string $date, array $lines, float $subtotal, float $tax, float $grand): SummaryDelta
+    public static function forCreditNote(int $storeId, string $date, array $lines, float $subtotal, float $tax, float $grand, float $cogs = 0.0): SummaryDelta
     {
         $items = array_sum(array_column($lines, 'quantity'));
 
@@ -212,7 +212,10 @@ final class SummaryDeltaFactory
             'total_refunds'       => $grand,
             'return_count'        => 1,
             'return_items_count'  => $items,
-            'gross_profit'        => -$grand,
+            // Reverse what the sale booked: gross = grand - cogs. The old code
+            // subtracted the full refund from gross, wiping out the whole
+            // margin and driving profit negative.
+            'gross_profit'        => -($grand - $cogs),
         ]);
     }
 

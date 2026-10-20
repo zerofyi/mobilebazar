@@ -249,8 +249,8 @@ export function PartyDetails({ invoice, m, nameClass = "font-bold", className = 
     return (
         <div className={className}>
             <p className={nameClass}>{invoice.party_name}</p>
-            {invoice.party_address && <p className="whitespace-pre-line">{invoice.party_address}</p>}
             {invoice.party_phone && <p>Ph: {invoice.party_phone}</p>}
+            {invoice.party_address && <p className="whitespace-pre-line">{invoice.party_address}</p>}
             {invoice.party_gstin && <p><span className="font-semibold">GSTIN:</span> {invoice.party_gstin}</p>}
             {invoice.party_gstin && m.partyState && <p><span className="font-semibold">State:</span> {m.partyState}</p>}
         </div>

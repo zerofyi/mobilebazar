@@ -136,7 +136,7 @@ class CreditNoteController extends Controller
 
         $cn = CreditNote::with([
             'invoice:id,uuid,invoice_number',
-            'customer:id,name,phone',
+            'customer:id,name,phone_primary',
             'items.productVariant:id,variant_name,sku',
             'createdBy:id,name',
         ])
@@ -162,7 +162,7 @@ class CreditNoteController extends Controller
                 ] : null,
                 'customer'           => $cn->customer ? [
                     'name'  => $cn->customer->name,
-                    'phone' => $cn->customer->phone,
+                    'phone' => $cn->customer->phone_primary,
                 ] : null,
                 'items' => $cn->items->map(fn ($i) => [
                     'product_name' => $i->productVariant?->variant_name ?? $i->manual_item_name ?? '—',

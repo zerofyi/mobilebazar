@@ -53,6 +53,8 @@ export interface ShowInvoiceItem {
     sgst_amount: number;
     igst_amount: number;
     line_total: number;
+    cost_total: number | null;
+    profit: number | null;
     is_margin_scheme: boolean;
     units: ShowInvoiceUnit[];
     batch_allocations: ShowInvoiceBatchAlloc[];
@@ -77,6 +79,7 @@ export interface ShowInvoice {
     grand_total: number;
     paid_amount: number;
     due_amount: number;
+    total_profit: number;
     notes: string | null;
     created_by: string | null;
     created_at: string | null;
@@ -233,6 +236,8 @@ export default function SaleShow({ invoice }: Props) {
                                 <div className="flex justify-between text-base font-bold"><dt>Grand Total</dt><dd className="tabular-nums text-primary">₹<FormatAmount amount={invoice.grand_total} /></dd></div>
                                 <div className="flex justify-between"><dt className="text-muted-foreground">Paid</dt><dd className="tabular-nums">₹<FormatAmount amount={invoice.paid_amount} /></dd></div>
                                 <div className="flex justify-between"><dt className={cn(invoice.due_amount > 0.009 ? "text-destructive font-medium" : "text-muted-foreground")}>Due</dt><dd className={cn("tabular-nums", invoice.due_amount > 0.009 && "text-destructive font-medium")}>₹<FormatAmount amount={invoice.due_amount} /></dd></div>
+                                <Separator />
+                                <div className="flex justify-between"><dt className="text-muted-foreground">Total Profit</dt><dd className={cn("tabular-nums font-semibold", invoice.total_profit < 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400")}>₹<FormatAmount amount={invoice.total_profit} /></dd></div>
                             </dl>
                         </CardContent>
                     </Card>
@@ -270,6 +275,7 @@ export default function SaleShow({ invoice }: Props) {
                                         <TableHead className="text-right">Taxable</TableHead>
                                         <TableHead className="text-right">Tax</TableHead>
                                         <TableHead className="text-right">Total</TableHead>
+                                        <TableHead className="text-right">Profit</TableHead>
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
@@ -310,6 +316,18 @@ export default function SaleShow({ invoice }: Props) {
                                                 <p className="text-[11px] text-muted-foreground">{it.tax_pct}%</p>
                                             </TableCell>
                                             <TableCell className="text-right font-semibold tabular-nums">₹<FormatAmount amount={it.line_total} /></TableCell>
+                                            <TableCell className="text-right tabular-nums">
+                                                {it.profit === null ? (
+                                                    <span className="text-muted-foreground">—</span>
+                                                ) : (
+                                                    <span className={it.profit < 0 ? "font-medium text-destructive" : "font-medium text-emerald-600 dark:text-emerald-400"}>
+                                                        ₹<FormatAmount amount={it.profit} />
+                                                    </span>
+                                                )}
+                                                {it.cost_total !== null && (
+                                                    <p className="text-[11px] text-muted-foreground">cost ₹<FormatAmount amount={it.cost_total} /></p>
+                                                )}
+                                            </TableCell>
                                         </TableRow>
                                     ))}
                                 </TableBody>

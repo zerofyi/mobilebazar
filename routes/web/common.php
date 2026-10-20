@@ -214,6 +214,7 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
     // ── Stock inventory (read-only) ──
     Route::prefix('inventory')->name('inventory.')->group(function () {
         Route::get('/', [InventoryController::class, 'index'])->name('index');
+        Route::get('/print', [InventoryController::class, 'printInventory'])->name('print');
         // Static before wildcard: /verify/search must not match {kind}.
         Route::get('/verify/search', [InventoryController::class, 'verifySearch'])->name('verify.search');
         Route::get('/verify/{kind}/{id}', [InventoryController::class, 'verifyShow'])->name('verify.show');

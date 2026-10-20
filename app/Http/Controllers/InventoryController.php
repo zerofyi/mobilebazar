@@ -109,6 +109,64 @@ class InventoryController extends Controller
         ]);
     }
 
+    /**
+     * Print Inventory — full in-stock list for an A4 stock sheet.
+     * In stock = serialized units available/reserved + batches with
+     * remaining_qty > 0. No pagination: the page is meant to be printed whole.
+     * Price-column visibility is a client-side (print-options) concern.
+     */
+    public function printInventory(Request $request): Response
+    {
+        $user = $request->user();
+        abort_unless($user->can('inventory.view'), 403);
+
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+        abort_unless($store && $store->is_active, 403, 'No active store assigned to this user.');
+
+        $units = StockUnit::with(['productVariant:id,product_id,variant_name,sku', 'productVariant.product:id,name'])
+            ->where('store_id', $store->id)
+            ->whereIn('status', ['available', 'reserved'])
+            ->orderBy('id')
+            ->get()
+            ->map(fn (StockUnit $u) => [
+                'id'              => $u->id,
+                'product_name'    => $u->productVariant?->product?->name ?? $u->manual_item_name ?? '—',
+                'variant_name'    => $u->productVariant?->variant_name,
+                'sku'             => $u->productVariant?->sku,
+                'imei'            => $u->imei1 ?? $u->serial_number,
+                'condition'       => $u->device_condition,
+                'status'          => $u->status,
+                'cost'            => (float) $u->landed_cost,
+                'wholesale_price' => $u->wholesale_price !== null ? (float) $u->wholesale_price : null,
+                'retail_price'    => $u->selling_price !== null ? (float) $u->selling_price : null,
+            ])->values();
+
+        $batches = StockBatch::with(['productVariant:id,product_id,variant_name,sku', 'productVariant.product:id,name'])
+            ->where('store_id', $store->id)
+            ->where('remaining_qty', '>', 0)
+            ->orderByDesc('remaining_qty')
+            ->get()
+            ->map(fn (StockBatch $b) => [
+                'id'              => $b->id,
+                'product_name'    => $b->productVariant?->product?->name ?? $b->manual_item_name ?? '—',
+                'variant_name'    => $b->productVariant?->variant_name,
+                'sku'             => $b->productVariant?->sku,
+                'batch_number'    => $b->batch_number,
+                'qty'             => (int) $b->remaining_qty,
+                'cost'            => (float) $b->landed_cost,
+                'wholesale_price' => $b->wholesale_price !== null ? (float) $b->wholesale_price : null,
+                'retail_price'    => $b->selling_price !== null ? (float) $b->selling_price : null,
+            ])->values();
+
+        return inertia('Billing/Inventory/Print', [
+            'store' => ['name' => $store->name, 'code' => $store->code],
+            'printed_at' => now()->format('d M Y, h:i A'),
+            'units' => $units,
+            'batches' => $batches,
+        ]);
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Verify — global stock search (IMEI / serial / name / SKU / barcode /
