@@ -117,7 +117,7 @@ class InstallmentController extends Controller
 
         $validated = $request->validate([
             'amount'         => ['required', 'numeric', 'min:0.01'],
-            'payment_mode'   => ['required', 'in:cash,upi,bank,card,neft,cheque'],
+            'payment_mode'   => ['required', 'in:cash,upi,bank,card,neft,cheque,rtgs,imps,credit_card,debit_card'],
             'txn_reference'  => ['nullable', 'string', 'max:100'],
             'notes'          => ['nullable', 'string', 'max:1000'],
         ]);

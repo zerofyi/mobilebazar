@@ -3,7 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Models\DailySummary;
+use App\Models\Invoice;
+use App\Models\LoanSchedule;
 use App\Models\MonthlySummary;
+use App\Models\StockBatch;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -33,6 +36,7 @@ class DashboardController extends Controller
             'date', 'total_sales', 'total_purchases', 'gross_profit', 'net_profit',
             'total_expenses', 'total_discounts', 'total_tax_collected', 'total_refunds',
             'cash_collected', 'upi_collected', 'card_collected', 'bank_collected',
+            'buyback_adjusted', 'total_payables',
             'total_loan_given', 'total_emi_collected',
             'invoice_count', 'purchase_count', 'loans_count',
         ];
@@ -50,7 +54,7 @@ class DashboardController extends Controller
         $monthAgg = DailySummary::query()
             ->where('store_id', $store->id)
             ->whereBetween('date', [$monthStart, $today])
-            ->selectRaw('SUM(total_sales) as total_sales, SUM(total_purchases) as total_purchases, SUM(gross_profit) as gross_profit, SUM(net_profit) as net_profit, SUM(total_expenses) as total_expenses, SUM(total_discounts) as total_discounts, SUM(total_tax_collected) as total_tax_collected, SUM(total_refunds) as total_refunds, SUM(cash_collected) as cash_collected, SUM(upi_collected) as upi_collected, SUM(card_collected) as card_collected, SUM(bank_collected) as bank_collected, SUM(total_loan_given) as total_loan_given, SUM(total_emi_collected) as total_emi_collected, SUM(invoice_count) as invoice_count, SUM(purchase_count) as purchase_count, SUM(loans_count) as loans_count')
+            ->selectRaw('SUM(total_sales) as total_sales, SUM(total_purchases) as total_purchases, SUM(gross_profit) as gross_profit, SUM(net_profit) as net_profit, SUM(total_expenses) as total_expenses, SUM(total_discounts) as total_discounts, SUM(total_tax_collected) as total_tax_collected, SUM(total_refunds) as total_refunds, SUM(cash_collected) as cash_collected, SUM(upi_collected) as upi_collected, SUM(card_collected) as card_collected, SUM(bank_collected) as bank_collected, SUM(buyback_adjusted) as buyback_adjusted, SUM(total_loan_given) as total_loan_given, SUM(total_emi_collected) as total_emi_collected, SUM(invoice_count) as invoice_count, SUM(purchase_count) as purchase_count, SUM(loans_count) as loans_count')
             ->first();
 
         $monthRow = MonthlySummary::query()
@@ -86,6 +90,7 @@ class DashboardController extends Controller
                     ['name' => 'UPI', 'value' => (float) ($monthAgg->upi_collected ?? 0)],
                     ['name' => 'Card', 'value' => (float) ($monthAgg->card_collected ?? 0)],
                     ['name' => 'Bank', 'value' => (float) ($monthAgg->bank_collected ?? 0)],
+                    ['name' => 'Buyback', 'value' => (float) ($monthAgg->buyback_adjusted ?? 0)],
                 ],
                 'closing_stock' => (float) ($monthRow->closing_stock_value ?? 0),
                 'receivables'   => (float) ($monthRow->total_receivables ?? 0),
@@ -94,6 +99,7 @@ class DashboardController extends Controller
                 'label'         => today()->format('F Y'),
             ],
             'trend' => $trend,
+            'alerts' => $this->alerts($store->id),
         ]);
     }
 
@@ -142,5 +148,36 @@ class DashboardController extends Controller
         }
 
         return round((($t - $y) / abs($y)) * 100, 1);
+    }
+
+    /**
+     * Actionable exceptions for the dashboard "Needs attention" feed.
+     * Three indexed count queries — kept cheap on purpose.
+     */
+    private function alerts(int $storeId): array
+    {
+        $overdueEmis = LoanSchedule::query()
+            ->whereHas('loan', fn ($q) => $q->where('store_id', $storeId))
+            ->overdue()
+            ->count();
+
+        $unpaidInvoices = Invoice::query()
+            ->where('store_id', $storeId)
+            ->where('payment_status', '!=', 'paid')
+            ->where('due_amount', '>', 0)
+            ->count();
+
+        $lowStock = StockBatch::query()
+            ->where('store_id', $storeId)
+            ->where('is_saleable', true)
+            ->where('remaining_qty', '<=', 2)
+            ->where('remaining_qty', '>', 0)
+            ->count();
+
+        return [
+            ['key' => 'overdue_emis', 'count' => (int) $overdueEmis, 'href' => '/app/loan-installments/overdue'],
+            ['key' => 'unpaid_invoices', 'count' => (int) $unpaidInvoices, 'href' => '/app/sales?payment_status=partial'],
+            ['key' => 'low_stock', 'count' => (int) $lowStock, 'href' => '/app/inventory?filter=low'],
+        ];
     }
 }

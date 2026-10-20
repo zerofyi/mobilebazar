@@ -105,7 +105,7 @@ export default function VerifyStockModal({
 
     return (
         <CommandDialog open={open} onOpenChange={onOpenChange}>
-            <Command>
+            <Command shouldFilter={false}>
                 <div className="relative">
                     <CommandInput
                         placeholder="Verify stock — type IMEI, serial, batch no, name, SKU…"

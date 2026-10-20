@@ -101,7 +101,7 @@ class StoreSaleRequest extends FormRequest
             // payment_status is accepted but IGNORED — the server derives it
             // from paid/due so a tampered client can never store a lie.
             'payment_status' => ['nullable', Rule::in(['paid', 'partial', 'unpaid'])],
-            'payment_mode'   => ['nullable', Rule::in(['cash', 'upi', 'neft', 'cheque', 'card', 'bank', 'split', 'buyback'])],
+            'payment_mode'   => ['nullable', Rule::in(['cash', 'upi', 'neft', 'cheque', 'card', 'bank', 'split', 'buyback', 'rtgs', 'imps', 'credit_card', 'debit_card'])],
 
             // ── Misc ──────────────────────────────────────────────────────
             'notes' => ['nullable', 'string', 'max:1000'],
@@ -111,7 +111,6 @@ class StoreSaleRequest extends FormRequest
             'lines.*.product_variant_id'     => ['nullable', 'integer', 'exists:product_variants,id'],
             'lines.*.manual_item_name'       => ['nullable', 'string', 'max:200'],
             'lines.*.warranty'               => ['nullable', 'string', 'max:100'],
-            'lines.*.manual_hsn'             => ['nullable', 'string', 'max:20'],
             'lines.*.is_serialized'          => ['required', 'boolean'],
             'lines.*.qty'                    => ['required', 'integer', 'min:1'],
             'lines.*.stock_unit_ids'         => ['nullable', 'array'],

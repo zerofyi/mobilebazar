@@ -390,7 +390,7 @@ export function initialSaleState(store: StoreInfo, initialInvoiceNumber: string)
         taxMovement: "intra",
         isGstBilled: store.is_gst_registered,
         invoiceNumber: initialInvoiceNumber,
-        invoiceDate: new Date().toISOString().slice(0, 10),
+        invoiceDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
         billDiscount: 0,
         shippingCharge: 0,
         autoRoundOff: true,
@@ -945,8 +945,10 @@ export function buildSalePayload(
     // Same paid logic as the SaleProvider: splits win over the legacy manual field.
     const splitTotal = state.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
     const paid = state.paidInFull ? round2(grandTotal) : state.payments.length > 0 ? round2(splitTotal) : round2(Math.max(0, state.paidAmount));
+    // Derive due from the freshly computed paid — never trust a stale parameter.
+    const derivedDue = round2(Math.max(0, grandTotal - paid));
     const paymentStatus: "paid" | "partial" | "unpaid" =
-        dueAmount <= 0.009 ? "paid" : paid > 0 ? "partial" : "unpaid";
+        derivedDue <= 0.009 ? "paid" : paid > 0 ? "partial" : "unpaid";
 
     if (!state.party) throw new Error("A party is required to complete the sale.");
 
@@ -972,7 +974,7 @@ export function buildSalePayload(
         round_off: round2(roundOff),
         grand_total: round2(grandTotal),
         paid_amount: paid,
-        due_amount: round2(dueAmount),
+        due_amount: derivedDue,
         payment_status: paymentStatus,
         payment_mode: state.paymentMode,
         payments: payloadPayments,

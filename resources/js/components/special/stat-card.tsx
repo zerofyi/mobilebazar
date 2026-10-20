@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus, type LucideIcon } from "lucide-react";
+import { Link } from "@inertiajs/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -18,7 +19,7 @@ import { cn } from "@/lib/utils";
  * both names are kept so existing call sites don't break; prefer "danger"
  * going forward.
  */
-export type Variant = "default" | "success" | "warning" | "info" | "error" | "danger";
+export type Variant = "default" | "success" | "warning" | "info" | "error" | "danger" | "destructive";
 
 export interface StatCardProps extends Omit<ComponentPropsWithoutRef<typeof Card>, "title"> {
   /** Label shown above the value. */
@@ -35,6 +36,8 @@ export interface StatCardProps extends Omit<ComponentPropsWithoutRef<typeof Card
   variant?: Variant;
   /** Renders a skeleton placeholder sized to match the loaded card, so nothing shifts when data arrives. */
   loading?: boolean;
+  /** When set, the whole card becomes a link to this URL (drill-down). Shows a hover affordance. */
+  href?: string;
 }
 
 const destructiveStyle = {
@@ -61,6 +64,7 @@ const variantStyles: Record<Variant, { card: string; icon: string }> = {
   },
   error: destructiveStyle,
   danger: destructiveStyle,
+  destructive: destructiveStyle,
 };
 
 const trendStyles = {
@@ -82,6 +86,7 @@ function StatCardBase(
     growth,
     variant = "default",
     loading = false,
+    href,
     className,
     ...rest
   }: StatCardProps,
@@ -124,11 +129,16 @@ function StatCardBase(
     validGrowth === undefined ? undefined : validGrowth > 0 ? "up" : validGrowth < 0 ? "down" : "flat";
   const TrendIcon = trend === "down" ? ArrowDownRight : trend === "flat" ? Minus : ArrowUpRight;
 
-  return (
+  const card = (
     <Card
       ref={ref}
       aria-labelledby={titleId}
-      className={cn("border transition-all duration-200", styles.card, className)}
+      className={cn(
+        "border transition-all duration-200",
+        styles.card,
+        href && "cursor-pointer hover:shadow-md hover:-translate-y-0.5",
+        className
+      )}
       {...rest}
     >
       <CardHeader className="flex flex-row items-center justify-between space-y-0 gap-2 pb-1.5 px-4">
@@ -177,6 +187,16 @@ function StatCardBase(
       </CardContent>
     </Card>
   );
+
+  if (href) {
+    return (
+      <Link href={href} className="block" aria-label={`${title} — view details`}>
+        {card}
+      </Link>
+    );
+  }
+
+  return card;
 }
 
 const StatCardWithRef = forwardRef<HTMLDivElement, StatCardProps>(StatCardBase);

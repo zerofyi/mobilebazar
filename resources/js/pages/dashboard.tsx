@@ -1,11 +1,14 @@
 import { Head } from '@inertiajs/react';
 import {
+    AlertTriangle,
     Banknote,
     CalendarDays,
+    CalendarClock,
     CreditCard,
     HandCoins,
     IndianRupee,
     Landmark,
+    PackageX,
     ReceiptText,
     ShoppingBag,
     ShoppingCart,
@@ -90,6 +93,7 @@ interface DashboardProps {
         label: string;
     };
     trend: DayRow[];
+    alerts: { key: 'overdue_emis' | 'unpaid_invoices' | 'low_stock'; count: number; href: string }[];
 }
 
 const inr = new Intl.NumberFormat('en-IN', {
@@ -105,11 +109,51 @@ const inrCompact = new Intl.NumberFormat('en-IN', {
     maximumFractionDigits: 1,
 });
 
+const ALERT_META: Record<string, { title: string; desc: string; icon: typeof AlertTriangle }> = {
+    overdue_emis: {
+        title: 'Overdue EMIs',
+        desc: 'installments past due date',
+        icon: CalendarClock,
+    },
+    unpaid_invoices: {
+        title: 'Unpaid invoices',
+        desc: 'bills with balance due',
+        icon: ReceiptText,
+    },
+    low_stock: {
+        title: 'Low stock',
+        desc: 'batches down to 2 or fewer',
+        icon: PackageX,
+    },
+};
+
+function AlertCard({ alert }: { alert: { key: string; count: number; href: string } }) {
+    const meta = ALERT_META[alert.key] ?? { title: alert.key, desc: '', icon: AlertTriangle };
+    const Icon = meta.icon;
+    return (
+        <a
+            href={alert.href}
+            className="flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 transition-all hover:shadow-md hover:-translate-y-0.5"
+        >
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-yellow-500/15">
+                <Icon className="size-4.5 text-yellow-600" />
+            </span>
+            <span className="min-w-0">
+                <span className="block text-sm font-semibold">
+                    {alert.count} {meta.title}
+                </span>
+                <span className="block truncate text-xs text-muted-foreground">{meta.desc}</span>
+            </span>
+        </a>
+    );
+}
+
 const MODE_COLORS: Record<string, string> = {
     Cash: '#10b981',
     UPI: '#3b82f6',
     Card: '#f59e0b',
     Bank: '#8b5cf6',
+    Buyback: '#f43f5e',
 };
 
 function shortDate(iso?: string): string {
@@ -159,6 +203,7 @@ export default function Dashboard({
     growth = { sales: null, invoices: null, profit: null },
     month = emptyMonth,
     trend = [],
+    alerts = [],
 }: Partial<DashboardProps>) {
     const trendData = trend.map((d) => ({ ...d, label: shortDate(d.date) }));
     const last7 = [...trend].slice(-7).reverse();
@@ -206,6 +251,7 @@ export default function Dashboard({
                             subtitle="vs yesterday"
                             growth={growth.sales ?? undefined}
                             variant="success"
+                            href="/app/sales"
                         />
                         <StatCard
                             title="Net Profit"
@@ -223,6 +269,7 @@ export default function Dashboard({
                             subValue={`${inrCompact.format(today.discounts)} discounts`}
                             subtitle="bills raised"
                             growth={growth.invoices ?? undefined}
+                            href="/app/sales"
                         />
                         <StatCard
                             title="EMI Collected"
@@ -231,6 +278,7 @@ export default function Dashboard({
                             subValue={`${inrCompact.format(today.loan_given)} disbursed`}
                             subtitle="loan book today"
                             variant="warning"
+                            href="/app/loan-installments/today"
                         />
                     </div>
                 </div>
@@ -246,6 +294,7 @@ export default function Dashboard({
                             subValue={`${month.invoices} invoices`}
                             subtitle="total revenue"
                             variant="success"
+                            href="/app/sales"
                         />
                         <StatCard
                             title="Month Purchases"
@@ -253,6 +302,7 @@ export default function Dashboard({
                             value={inr.format(month.purchases)}
                             subValue={`${month.purchases_n} bills`}
                             subtitle="stock inward"
+                            href="/app/purchases"
                         />
                         <StatCard
                             title="Month Net Profit"
@@ -269,9 +319,24 @@ export default function Dashboard({
                             subValue={`${inrCompact.format(month.payables)} payables`}
                             subtitle="to collect / to pay"
                             variant={month.receivables > 0 ? 'warning' : undefined}
+                            href="/app/sales?payment_status=partial"
                         />
                     </div>
                 </div>
+
+                {/* Needs attention */}
+                {alerts.some((a) => a.count > 0) && (
+                    <div>
+                        <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Needs attention</h3>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                            {alerts
+                                .filter((a) => a.count > 0)
+                                .map((a) => (
+                                    <AlertCard key={a.key} alert={a} />
+                                ))}
+                        </div>
+                    </div>
+                )}
 
                 {/* Charts */}
                 <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { router } from "@inertiajs/react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -151,7 +152,14 @@ export default function CollectPaymentModal({
                             Cancel
                         </Button>
                         <Button onClick={proceed} disabled={submitting}>
-                            Continue
+                            {submitting ? (
+                                <>
+                                    <Loader2 className="mr-2 size-4 animate-spin" />
+                                    Collecting…
+                                </>
+                            ) : (
+                                "Continue"
+                            )}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

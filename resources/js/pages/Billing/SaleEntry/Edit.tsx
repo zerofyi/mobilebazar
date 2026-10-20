@@ -32,6 +32,7 @@ interface EditInvoice {
     paidAmount: number;
     paidInFull: boolean;
     paymentMode: "cash" | "upi" | "card" | "bank" | "neft" | "cheque";
+    payments: Array<{ id: string; mode: string; amount: number; reference?: string; purchase_order_id?: number }>;
     notes: string;
     lines: EditLine[];
 }
@@ -64,6 +65,14 @@ function buildHydratedState(store: StoreInfo, invoice: EditInvoice): SaleState {
         paidAmount: invoice.paidAmount,
         paidInFull: invoice.paidInFull,
         paymentMode: invoice.paymentMode,
+        payments: (invoice.payments ?? []).map((p) => ({
+            id: p.id,
+            mode: p.mode as any,
+            amount: Number(p.amount) || 0,
+            reference: p.reference,
+            purchase_order_id: p.purchase_order_id,
+            locked: p.mode === "buyback",
+        })),
         notes: invoice.notes,
     };
 }

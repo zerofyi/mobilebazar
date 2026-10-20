@@ -3,7 +3,7 @@ import { Head, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
 import { usePermissions } from "@/hooks/user-permissions";
 import {
-    Boxes, Cpu, Search, IndianRupee, PackageCheck, Layers, ScanSearch,
+    Boxes, Cpu, Search, IndianRupee, PackageCheck, Layers, ScanSearch, AlertTriangle, X,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -87,7 +87,7 @@ export interface InventorySummary {
 
 interface Props {
     tab: 'serialized' | 'batches';
-    filters: { search?: string; status?: string; condition?: string };
+    filters: { search?: string; status?: string; condition?: string; filter?: string };
     summary: InventorySummary;
     units: Paginator<InventoryUnit> | null;
     batches: Paginator<InventoryBatch> | null;
@@ -128,6 +128,16 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
     const [status, setStatus] = useState(filters.status ?? "all");
     const [condition, setCondition] = useState(filters.condition ?? "all");
 
+    // Low-stock deep-link from the dashboard "Needs attention" feed.
+    const isLowStock = filters.filter === "low";
+    const clearLowStock = () => {
+        router.get(
+            inv.index.url(),
+            { tab: "batches", search: search || undefined },
+            { preserveState: true, replace: true },
+        );
+    };
+
     const applyFilters = (nextTab: string = tab) => {
         router.get(
             inv.index.url(),
@@ -136,6 +146,7 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
                 search: search || undefined,
                 status: nextTab === 'serialized' && status !== 'all' ? status : undefined,
                 condition: condition !== 'all' ? condition : undefined,
+                filter: isLowStock && nextTab === 'batches' ? 'low' : undefined,
             },
             { preserveState: true, replace: true },
         );
@@ -158,6 +169,7 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
         if (search) params.set("search", search);
         if (tab === 'serialized' && status !== 'all') params.set("status", status);
         if (condition !== 'all') params.set("condition", condition);
+        if (isLowStock) params.set("filter", "low");
         void paginator;
         return `${inv.index.url()}?${params.toString()}`;
     };
@@ -272,6 +284,28 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
                         </button>
                     ))}
                 </div>
+
+                {/* Low-stock deep-link chip (from the dashboard "Needs attention" feed) */}
+                {isLowStock && (
+                    <div className="flex items-center gap-2">
+                        <Badge
+                            variant="secondary"
+                            className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                        >
+                            <AlertTriangle className="size-3.5" />
+                            Low stock &mdash; batches with 2 or fewer remaining
+                        </Badge>
+                        <button
+                            type="button"
+                            onClick={clearLowStock}
+                            className="inline-flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                            aria-label="Clear low-stock filter"
+                        >
+                            <X className="size-3.5" />
+                            Show all batches
+                        </button>
+                    </div>
+                )}
 
                 {/* Filters */}
                 <Card>

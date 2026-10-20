@@ -195,10 +195,13 @@ export default function PosSearchBar() {
                         onFocus={() => setOpen(true)}
                         onKeyDown={onKeyDown}
                         placeholder={PLACEHOLDERS[mode]}
-                        className="h-14 pl-12 pr-12 text-base rounded-xl shadow-sm"
+                        className="h-14 pl-12 pr-16 text-base rounded-xl shadow-sm"
                         aria-label="Search stock"
+                        data-pos-search
+                        title="Search stock (F2)"
                     />
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                        <kbd className="hidden rounded border bg-muted px-1.5 text-[10px] font-mono text-muted-foreground lg:inline">F2</kbd>
                         {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
                         {query && (
                             <Button type="button" variant="ghost" size="icon" className="size-7" onClick={() => { clear(); inputRef.current?.focus(); }} aria-label="Clear search">

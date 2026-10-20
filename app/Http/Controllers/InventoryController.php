@@ -32,7 +32,15 @@ class InventoryController extends Controller
             $tab = 'serialized';
         }
 
-        $filters = $request->only(['search', 'status', 'condition']);
+        $filters = $request->only(['search', 'status', 'condition', 'filter']);
+
+        // "Low stock" deep-link from the dashboard "Needs attention" feed —
+        // the alert counts saleable batches at 2 or fewer remaining, so force
+        // the batches tab and mirror that definition in the query below.
+        $isLowStock = ($filters['filter'] ?? null) === 'low';
+        if ($isLowStock) {
+            $tab = 'batches';
+        }
 
         // ── Summary (store-wide, unfiltered) ──────────────────────────────
         $unitBase = StockUnit::where('store_id', $store->id)->whereIn('status', ['available', 'reserved']);
@@ -76,6 +84,9 @@ class InventoryController extends Controller
         if ($tab === 'batches') {
             $batches = StockBatch::with(['productVariant:id,product_id,variant_name,sku,barcode', 'productVariant.product:id,name'])
                 ->where('store_id', $store->id)
+                ->when($isLowStock, fn ($q) => $q->where('is_saleable', true)
+                    ->where('remaining_qty', '<=', 2)
+                    ->where('remaining_qty', '>', 0))
                 ->when($filters['search'] ?? null, fn ($q, $v) => $q->where(fn ($q2) => $q2
                     ->where('manual_item_name', 'like', "%{$v}%")
                     ->orWhere('batch_number', 'like', "%{$v}%")

@@ -56,9 +56,9 @@ class Supplier extends Model
         return $query->where('is_active', true);
     }
 
-    public function scopeForStore(Builder $query, int $storeId): Builder
+    public function scopeForStore(Builder $query, ?int $storeId = null): Builder
     {
-        return $query->where('store_id', $storeId);
+        return $storeId === null ? $query : $query->where('store_id', $storeId);
     }
 
     /*

@@ -40,6 +40,8 @@ class InvoiceItem extends Model
             'tax_amount' => 'decimal:2',
             'discount_amount' => 'decimal:2',
             'line_total' => 'decimal:2',
+            'is_margin_scheme' => 'boolean',
+            'landed_cost' => 'decimal:2',
         ];
     }
 
@@ -61,11 +63,6 @@ class InvoiceItem extends Model
     public function stockBatch(): BelongsTo
     {
         return $this->belongsTo(StockBatch::class);
-    }
-
-    public function taxCategory(): BelongsTo
-    {
-        return $this->belongsTo(TaxCategory::class);
     }
 
     public function batchAllocations(): HasMany

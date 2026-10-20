@@ -160,8 +160,9 @@ export default function SaleTotals({ onSubmit, onPark, isSubmitting, errors, isV
                             checked={state.paidInFull}
                             onCheckedChange={(c) => dispatch({ type: "SET_PAID_IN_FULL", payload: !!c })}
                         />
-                        <Label htmlFor="paid-in-full" className="text-xs font-medium cursor-pointer whitespace-nowrap" title="Tick to collect the full bill amount now">
+                        <Label htmlFor="paid-in-full" className="text-xs font-medium cursor-pointer whitespace-nowrap" title="Tick to collect the full bill amount now (F8)">
                             Paid ₹
+                            <kbd className="ml-1.5 hidden rounded border bg-muted px-1 text-[10px] font-mono text-muted-foreground sm:inline">F8</kbd>
                         </Label>
                     </div>
                     {!state.paidInFull ? (
@@ -194,11 +195,13 @@ export default function SaleTotals({ onSubmit, onPark, isSubmitting, errors, isV
             )}
 
             <div className="flex gap-2">
-                <Button type="button" variant="outline" className="flex-1" disabled={isSubmitting || lineCount === 0} onClick={onPark}>
+                <Button type="button" variant="outline" className="flex-1" disabled={isSubmitting || lineCount === 0} onClick={onPark} title="Park sale (F5)">
                     <PauseCircle className="size-4 mr-1.5" /> Park
+                    <kbd className="ml-1.5 hidden rounded border bg-muted px-1 text-[10px] font-mono text-muted-foreground sm:inline">F5</kbd>
                 </Button>
-                <Button type="button" className="flex-[2] h-11 text-base font-semibold" disabled={isSubmitting || !isValid} onClick={onSubmit}>
+                <Button type="button" className="flex-[2] h-11 text-base font-semibold" disabled={isSubmitting || !isValid} onClick={onSubmit} title="Complete sale (F9)">
                     <CheckCircle2 className="size-5 mr-2" /> {isSubmitting ? "Posting…" : `Complete Sale · ₹${inr(grandTotal, grandTotal % 1 === 0 ? 0 : 2)}`}
+                    {!isSubmitting && <kbd className="ml-2 hidden rounded border border-white/30 bg-white/10 px-1.5 text-[10px] font-mono sm:inline">F9</kbd>}
                 </Button>
             </div>
         </div>

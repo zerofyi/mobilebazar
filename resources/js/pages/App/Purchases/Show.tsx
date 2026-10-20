@@ -72,25 +72,22 @@ interface PurchaseItem {
 
 // Optional future fields — the backend does not serialize these yet.
 // Sections render a graceful empty state until they arrive.
+// Keys mirror PurchaseEntryController::serializeForShow exactly.
 interface DebitNote {
-    id: number;
     uuid: string;
-    debit_note_number: string;
-    note_date: string | null;
-    amount: number;
+    number: string;
+    date: string | null;
+    grand_total: number;
     reason: string | null;
     status: string | null;
 }
 
 interface PurchasePayment {
-    id: number;
     uuid: string;
-    payment_number: string | null;
-    payment_date: string | null;
+    mode: string | null;
     amount: number;
-    payment_mode: string | null;
-    reference_no: string | null;
-    status: string | null;
+    paid_at: string | null;
+    reference: string | null;
 }
 
 interface PurchaseDetail {
@@ -775,11 +772,11 @@ export default function Show({ purchase }: Props) {
                                     </TableHeader>
                                     <TableBody>
                                         {debitNotes.map((dn) => (
-                                            <TableRow key={dn.id}>
-                                                <TableCell className="text-xs font-bold text-primary">{dn.debit_note_number}</TableCell>
-                                                <TableCell className="text-xs">{fmtDate(dn.note_date)}</TableCell>
+                                            <TableRow key={dn.uuid}>
+                                                <TableCell className="text-xs font-bold text-primary">{dn.number}</TableCell>
+                                                <TableCell className="text-xs">{fmtDate(dn.date)}</TableCell>
                                                 <TableCell className="text-xs text-muted-foreground">{dn.reason || '—'}</TableCell>
-                                                <TableCell className="text-right text-xs font-semibold tabular-nums">₹<FormatAmount amount={dn.amount} /></TableCell>
+                                                <TableCell className="text-right text-xs font-semibold tabular-nums">₹<FormatAmount amount={dn.grand_total} /></TableCell>
                                             </TableRow>
                                         ))}
                                     </TableBody>
@@ -812,13 +809,12 @@ export default function Show({ purchase }: Props) {
                                     </TableHeader>
                                     <TableBody>
                                         {payments.map((p) => (
-                                            <TableRow key={p.id}>
+                                            <TableRow key={p.uuid}>
                                                 <TableCell className="text-xs font-bold text-primary">
-                                                    {p.payment_number || `#${p.id}`}
-                                                    {p.reference_no && <span className="block text-[11px] font-normal text-muted-foreground">Ref: {p.reference_no}</span>}
+                                                    {p.reference ? `Ref: ${p.reference}` : `#${p.uuid.slice(0, 8)}`}
                                                 </TableCell>
-                                                <TableCell className="text-xs">{fmtDate(p.payment_date)}</TableCell>
-                                                <TableCell className="text-xs capitalize">{p.payment_mode || '—'}</TableCell>
+                                                <TableCell className="text-xs">{fmtDate(p.paid_at)}</TableCell>
+                                                <TableCell className="text-xs capitalize">{p.mode || '—'}</TableCell>
                                                 <TableCell className="text-right text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
                                                     ₹<FormatAmount amount={p.amount} />
                                                 </TableCell>

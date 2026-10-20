@@ -81,6 +81,7 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
 
         // 2. Dynamic wildcard routes go last
         Route::get('/{supplier}', [SupplierController::class, 'show'])->name('show');
+        Route::get('/{supplier}/edit', [SupplierController::class, 'edit'])->name('edit');
         Route::put('/{supplier}', [SupplierController::class, 'update'])->name('update');
         Route::delete('/{supplier}', [SupplierController::class, 'destroy'])->name('destroy');
 
@@ -92,6 +93,7 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/', [FinancerController::class, 'index'])->name('index');
         Route::post('/', [FinancerController::class, 'store'])->name('store');
         Route::get('/{financer}', [FinancerController::class, 'show'])->name('show');
+        Route::get('/{financer}/edit', [FinancerController::class, 'edit'])->name('edit');
         Route::put('/{financer}', [FinancerController::class, 'update'])->name('update');
         Route::delete('/{financer}', [FinancerController::class, 'destroy'])->name('destroy');
         Route::post('/{uuid}/restore', [FinancerController::class, 'restore'])->name('restore');
@@ -150,9 +152,9 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
 
     Route::prefix('debit-notes')->name('debit-notes.')->group(function () {
         // 1. Static routes (No parameters)
-        Route::get('/', [DebitNoteController::class, 'index'])->name('index');
-        Route::get('/create', [DebitNoteController::class, 'create'])->name('create');
-        Route::post('/', [DebitNoteController::class, 'store'])->name('store');
+        Route::get('/', [DebitNoteController::class, 'index'])->name('index')->middleware('can:purchases.view');
+        Route::get('/create', [DebitNoteController::class, 'create'])->name('create')->middleware('can:purchases.create');
+        Route::post('/', [DebitNoteController::class, 'store'])->name('store')->middleware('can:purchases.create');
 
         // 2. JSON endpoints for the Create page — static, BEFORE the wildcard
         Route::get('/purchases/search', [DebitNoteController::class, 'searchPurchases'])->name('purchases.search');
@@ -204,9 +206,9 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
     // ── Supplier payments ──
     Route::prefix('supplier-payments')->name('supplier-payments.')->group(function () {
         // 1. Static routes (No parameters)
-        Route::get('/', [SupplierPaymentController::class, 'index'])->name('index');
-        Route::get('/create', [SupplierPaymentController::class, 'create'])->name('create');
-        Route::post('/', [SupplierPaymentController::class, 'store'])->name('store');
+        Route::get('/', [SupplierPaymentController::class, 'index'])->name('index')->middleware('can:purchases.view');
+        Route::get('/create', [SupplierPaymentController::class, 'create'])->name('create')->middleware('can:purchases.create');
+        Route::post('/', [SupplierPaymentController::class, 'store'])->name('store')->middleware('can:purchases.create');
     });
 
     // ── Stock inventory (read-only) ──
@@ -239,10 +241,8 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::post('/{loan}/upload-agreement', [LoanController::class, 'upload'])->name('agreement.upload');
         Route::post('/{loan}/visits', [LoanController::class, 'logVisit'])->name('visits.store');
         Route::post('/{loan}/kyc', [LoanController::class, 'uploadKyc'])->name('kyc.upload');
-        Route::get('/{loan}/edit', [LoanController::class, 'edit'])->name('edit');
-        Route::put('/{loan}', [LoanController::class, 'update'])->name('update');
-        // Delete is PIN-gated: 5 attempts/minute makes a 4-digit PIN unbruteforceable.
-        Route::delete('/{loan}', [LoanController::class, 'destroy'])->name('destroy')->middleware('throttle:5,1');
+        // NOTE: loans.edit/update/destroy routes removed — LoanController has no
+        // edit/update/destroy methods. Re-add when the backend is implemented.
 
         // 3. Detail
         Route::get('/{loan}', [LoanController::class, 'show'])->name('show');

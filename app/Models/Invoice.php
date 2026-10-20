@@ -67,6 +67,9 @@ class Invoice extends Model
             'grand_total' => 'decimal:2',
             'paid_amount' => 'decimal:2',
             'due_amount' => 'decimal:2',
+            'is_gst_billed' => 'boolean',
+            'is_intra_state' => 'boolean',
+            'revised_at' => 'datetime',
         ];
     }
 

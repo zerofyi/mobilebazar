@@ -252,11 +252,12 @@ final class CreditNoteService
                 }
                 $restore = min($qtyToRestore, (int) $alloc->quantity);
                 $batch = StockBatch::where('store_id', $store->id)->lockForUpdate()->findOrFail($alloc->stock_batch_id);
-                $batch->increment('remaining_qty', $restore);
 
+                // Capture on-hand BEFORE the increment — liveOnHand re-sums from DB.
                 if (! array_key_exists($variantId, $running)) {
                     $running[$variantId] = $this->liveOnHand($store->id, $variantId);
                 }
+                $batch->increment('remaining_qty', $restore);
                 $running[$variantId] += $restore;
 
                 StockLedger::create([
@@ -387,7 +388,7 @@ final class CreditNoteService
             'updated_at' => $now,
         ], $variantIds));
 
-        return DB::table('stock_snapshots')
+        return \App\Models\StockSnapshot::query()
             ->where('store_id', $storeId)
             ->whereIn('product_variant_id', $variantIds)
             ->orderBy('product_variant_id')

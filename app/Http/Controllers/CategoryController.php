@@ -136,6 +136,13 @@ class CategoryController extends Controller
         DB::transaction(function () use ($validated, $request, $category) {
             $slug = !empty($validated['slug']) ? Str::slug($validated['slug']) : Str::slug($validated['name']);
 
+            // Deduplicate slug (append -1, -2...) excluding the current category.
+            $baseSlug = $slug;
+            $counter = 1;
+            while (Category::where('slug', $slug)->where('id', '!=', $category->id)->exists()) {
+                $slug = $baseSlug . '-' . $counter++;
+            }
+
             // Update main image
             if ($request->hasFile('image')) {
                 $existingAsset = $category->assets()->where('type', 'category_image')->first();

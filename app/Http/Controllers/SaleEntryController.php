@@ -554,7 +554,7 @@ class SaleEntryController extends Controller
 
         try {
             $this->verifySecurityPin($store, $data['security_pin']);
-            $this->sales->collectPayment($store, $user, $invoice, $data);
+            $this->saleService->collectPayment($store, $user, $invoice, $data);
         } catch (ValidationException $e) {
             return back()->withErrors($e->errors())->withInput();
         } catch (\App\Exceptions\AccountingException $e) {

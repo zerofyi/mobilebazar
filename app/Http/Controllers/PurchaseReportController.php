@@ -62,13 +62,17 @@ class PurchaseReportController extends Controller
             ->withQueryString()
             ->through(fn (PurchaseOrder $po) => $this->serializeRegisterRow($po));
 
+        $summaryRow = (clone $query)
+            ->selectRaw('COUNT(*) as total_count, SUM(subtotal) as subtotal, SUM(tax_amount) as tax_amount, SUM(grand_total) as grand_total, SUM(paid_amount) as paid_amount, SUM(due_amount) as due_amount')
+            ->first();
+
         $summary = [
-            'total_count'  => (int) (clone $query)->count(),
-            'subtotal'     => (float) (clone $query)->sum('subtotal'),
-            'tax_amount'   => (float) (clone $query)->sum('tax_amount'),
-            'grand_total'  => (float) (clone $query)->sum('grand_total'),
-            'paid_amount'  => (float) (clone $query)->sum('paid_amount'),
-            'due_amount'   => (float) (clone $query)->sum('due_amount'),
+            'total_count'  => (int) ($summaryRow->total_count ?? 0),
+            'subtotal'     => (float) ($summaryRow->subtotal ?? 0),
+            'tax_amount'   => (float) ($summaryRow->tax_amount ?? 0),
+            'grand_total'  => (float) ($summaryRow->grand_total ?? 0),
+            'paid_amount'  => (float) ($summaryRow->paid_amount ?? 0),
+            'due_amount'   => (float) ($summaryRow->due_amount ?? 0),
         ];
 
         $supplier = isset($validated['supplier_id'])

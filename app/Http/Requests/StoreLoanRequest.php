@@ -158,7 +158,18 @@ class StoreLoanRequest extends FormRequest
             ],
 
             // ── Financials ─────────────────────────────────────────────────
-            'principal_amount' => ['required', 'numeric', 'min:0.01', 'max:99999999.99'],
+            'principal_amount' => [
+                'required', 'numeric', 'min:0.01', 'max:99999999.99',
+                function ($attribute, $value, $fail) {
+                    $invoiceId = $this->input('invoice_id');
+                    if ($invoiceId) {
+                        $invoice = \App\Models\Invoice::find($invoiceId);
+                        if ($invoice && (float) $value > (float) $invoice->due_amount + 0.01) {
+                            $fail('The principal amount cannot exceed the invoice due amount (₹' . number_format((float) $invoice->due_amount, 2) . ').');
+                        }
+                    }
+                },
+            ],
             'down_payment'     => ['required', 'numeric', 'min:0', 'lte:principal_amount'],
             'down_payment_mode' => ['required', Rule::in(['cash', 'upi', 'bank', 'card', 'neft', 'cheque'])],
             'interest_rate'    => ['nullable', 'numeric', 'min:0', 'max:48'],

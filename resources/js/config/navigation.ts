@@ -127,7 +127,7 @@ export const COMMON_NAV: RoleNavigation = {
                     title: 'Credit Notes',
                     href: '/app/credit-notes',
                     icon: FileMinus2,
-                    permission: 'sales.index',
+                    permission: 'sales.view',
                 },
                 {
                     title: 'Buyback',

@@ -12,6 +12,7 @@ import {
     type StoreInfo, type CategoryOption,
 } from "./sale-context";
 import { useFlashToast } from "@/hooks/use-flash-toast";
+import { usePosShortcuts } from "@/hooks/use-pos-shortcuts";
 
 interface SaleEntryProps {
     store: StoreInfo;
@@ -99,8 +100,7 @@ function SaleEntryInner() {
     };
 
     // ── Submit ───────────────────────────────────────────────────────────────
-    const handleSubmit = () => {
-        setTriedSubmit(true);
+    const handleSubmit = () => {        setTriedSubmit(true);
         if (isSubmitting) return;
         if (!isValid) {
             document.getElementById("sale-validation")?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -123,6 +123,15 @@ function SaleEntryInner() {
             onFinish: () => setIsSubmitting(false),
         });
     };
+
+    // ── Keyboard shortcuts (F2 search, F4 new, F8 paid, F9 submit) ───────────
+    usePosShortcuts({
+        onFocusSearch: () => document.querySelector<HTMLInputElement>("[data-pos-search]")?.focus(),
+        onNewSale: handleClear,
+        onPark: handlePark,
+        onTogglePaid: () => dispatch({ type: "SET_PAID_IN_FULL", payload: !state.paidInFull }),
+        onSubmit: handleSubmit,
+    });
 
     return (
         <>
