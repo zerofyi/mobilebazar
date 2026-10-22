@@ -18,6 +18,7 @@ use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseEntryController;
 use App\Http\Controllers\PurchaseReportController;
 use App\Http\Controllers\SaleEntryController;
+use App\Http\Controllers\StockTransferController;
 use App\Http\Controllers\StoreController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\SupplierPaymentController;
@@ -78,6 +79,10 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
 
         // 1. Static endpoints MUST come before wildcard parameters
         Route::get('/search', [PartySearchController::class, 'suppliers'])->name('search');
+
+        // Stock-transfer setup: attach/detach a chain store on a supplier.
+        Route::post('/{supplier}/attach-store', [SupplierController::class, 'attachStore'])->name('attach-store');
+        Route::post('/{supplier}/detach-store', [SupplierController::class, 'detachStore'])->name('detach-store');
 
         // 2. Dynamic wildcard routes go last
         Route::get('/{supplier}', [SupplierController::class, 'show'])->name('show');
@@ -195,6 +200,15 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/create', [BuybackController::class, 'create'])->name('create')->middleware('can:sales.create');
         Route::get('/variants/search', [BuybackController::class, 'variantSearch'])->name('variants.search')->middleware('can:sales.create');
         Route::post('/', [BuybackController::class, 'store'])->name('store')->middleware('can:sales.create');
+    });
+
+    // ── Stock transfers (sale in this store + purchase in the target store) ──
+    // Permissions are granted manually per store — intentionally NOT seeded.
+    Route::prefix('transfers')->name('transfers.')->group(function () {
+        Route::get('/', [StockTransferController::class, 'index'])->name('index')->middleware('can:transfers.index');
+        Route::get('/create', [StockTransferController::class, 'create'])->name('create')->middleware('can:transfers.create');
+        Route::post('/', [StockTransferController::class, 'store'])->name('store')->middleware('can:transfers.create');
+        Route::get('/{transfer}', [StockTransferController::class, 'show'])->name('show')->middleware('can:transfers.view');
     });
 
     // ── Credit notes (sales returns) ──

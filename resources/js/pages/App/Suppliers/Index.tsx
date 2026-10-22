@@ -14,7 +14,9 @@ import {
     Building2,
     Phone,
     IndianRupee,
-    Store
+    Store,
+    Link2,
+    Unlink
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -47,6 +49,22 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 
 import SupplierFormModal, { SupplierItem } from './Partials/SupplierFormModal';
 import suppliers from '@/routes/app/suppliers';
@@ -68,6 +86,7 @@ interface IndexProps {
         trashed: number;
     };
     stores?: Array<{ id: number; name: string }>;
+    attachableStores?: Array<{ id: number; name: string; code: string | null }>;
     filters: {
         search?: string;
         is_active?: string;
@@ -75,7 +94,7 @@ interface IndexProps {
     };
 }
 
-export default function Index({ suppliers: supplierList, stats, stores = [], filters }: IndexProps) {
+export default function Index({ suppliers: supplierList, stats, stores = [], attachableStores = [], filters }: IndexProps) {
     const { auth } = usePage<{ auth: { user: { permissions: string[] } } }>().props;
     const permissions = auth?.user?.permissions || [];
 
@@ -86,6 +105,30 @@ export default function Index({ suppliers: supplierList, stats, stores = [], fil
     const [modalOpen, setModalOpen] = useState(false);
     const [editingSupplier, setEditingSupplier] = useState<SupplierItem | null>(null);
     const [actionTarget, setActionTarget] = useState<{ id: number; uuid: string; name: string; action: 'delete' | 'forceDelete' } | null>(null);
+    const [attachTarget, setAttachTarget] = useState<SupplierItem | null>(null);
+    const [attachStoreId, setAttachStoreId] = useState<string>('');
+    const [detachTarget, setDetachTarget] = useState<SupplierItem | null>(null);
+
+    const submitAttach = () => {
+        if (!attachTarget || !attachStoreId) return;
+        router.post(
+            `/app/suppliers/${attachTarget.id}/attach-store`,
+            { store_id: Number(attachStoreId) },
+            {
+                preserveScroll: true,
+                onSuccess: () => { setAttachTarget(null); setAttachStoreId(''); },
+            }
+        );
+    };
+
+    const submitDetach = () => {
+        if (!detachTarget) return;
+        router.post(
+            `/app/suppliers/${detachTarget.id}/detach-store`,
+            {},
+            { preserveScroll: true, onFinish: () => setDetachTarget(null) }
+        );
+    };
 
     const openCreateModal = () => {
         setEditingSupplier(null);
@@ -275,6 +318,11 @@ export default function Index({ suppliers: supplierList, stats, stores = [], fil
                                                             GSTIN: {item.gstin}
                                                         </Badge>
                                                     )}
+                                                    {item.linked_store && (
+                                                        <Badge variant="outline" className="text-[9px] px-1 py-0 border-primary/40 text-primary bg-primary/5">
+                                                            <Store className="size-2.5 mr-0.5" /> Store: {item.linked_store.name}
+                                                        </Badge>
+                                                    )}
                                                 </div>
                                             </TableCell>
 
@@ -332,6 +380,17 @@ export default function Index({ suppliers: supplierList, stats, stores = [], fil
                                                                 <Edit className="mr-2 size-4 text-muted-foreground" /> Edit Profile
                                                             </DropdownMenuItem>
                                                         )}
+                                                        {canUpdate && (
+                                                            item.linked_store ? (
+                                                                <DropdownMenuItem onClick={() => setDetachTarget(item)}>
+                                                                    <Unlink className="mr-2 size-4 text-muted-foreground" /> Detach Store ({item.linked_store.name})
+                                                                </DropdownMenuItem>
+                                                            ) : (
+                                                                <DropdownMenuItem onClick={() => { setAttachTarget(item); setAttachStoreId(''); }}>
+                                                                    <Link2 className="mr-2 size-4 text-muted-foreground" /> Attach Store
+                                                                </DropdownMenuItem>
+                                                            )
+                                                        )}
                                                         {canDelete && (
                                                             <>
                                                                 <DropdownMenuSeparator />
@@ -362,6 +421,64 @@ export default function Index({ suppliers: supplierList, stats, stores = [], fil
                 supplier={editingSupplier}
                 stores={stores}
             />
+
+            {/* Attach Store Dialog (stock-transfer setup, one-time) */}
+            <Dialog open={!!attachTarget} onOpenChange={(o) => { if (!o) { setAttachTarget(null); setAttachStoreId(''); } }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Attach Store</DialogTitle>
+                        <DialogDescription>
+                            Attach a chain store to “{attachTarget?.name}”. This supplier will represent that store in
+                            your books for stock transfers — its GSTIN, email and address are synced from the store
+                            record. One-time setup; the other store must attach your store on their side too.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2">
+                        <Label htmlFor="attach-store-select">Store</Label>
+                        <Select value={attachStoreId} onValueChange={setAttachStoreId}>
+                            <SelectTrigger id="attach-store-select" className="w-full">
+                                <SelectValue placeholder="Select a store" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {attachableStores
+                                    .filter((s) => s.id !== attachTarget?.store_id)
+                                    .map((s) => (
+                                        <SelectItem key={s.id} value={String(s.id)}>
+                                            {s.name}{s.code ? ` (${s.code})` : ''}
+                                        </SelectItem>
+                                    ))}
+                            </SelectContent>
+                        </Select>
+                        {attachableStores.filter((s) => s.id !== attachTarget?.store_id).length === 0 && (
+                            <p className="text-xs text-muted-foreground">No other active store is available to attach.</p>
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => { setAttachTarget(null); setAttachStoreId(''); }}>Cancel</Button>
+                        <Button onClick={submitAttach} disabled={!attachStoreId}>
+                            <Link2 className="mr-1.5 size-4" /> Attach Store
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Detach Store Confirmation */}
+            <AlertDialog open={!!detachTarget} onOpenChange={() => setDetachTarget(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Detach Store?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            “{detachTarget?.name}” will no longer represent {detachTarget?.linked_store?.name ?? 'the attached store'}.
+                            New stock transfers with that store will stop working until it is attached again. The synced
+                            GSTIN and address stay on the supplier record.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={submitDetach}>Detach Store</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             {/* Trash Confirmation Dialog */}
             <AlertDialog open={!!actionTarget} onOpenChange={() => setActionTarget(null)}>

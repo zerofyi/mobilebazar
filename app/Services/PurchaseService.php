@@ -15,6 +15,7 @@ use App\Models\PurchaseOrderItem;
 use App\Models\StockBatch;
 use App\Models\StockLedger;
 use App\Models\StockSnapshot;
+use App\Models\StockTransfer;
 use App\Models\StockUnit;
 use App\Models\StockUnitEvent;
 use App\Models\Store;
@@ -219,6 +220,15 @@ final class PurchaseService
      */
     public function updatePurchase(Store $store, User $user, PurchaseOrder $po, array $data): PurchaseOrder
     {
+        // A stock-transfer purchase is one half of a two-store bridge —
+        // editing it would desync the source store's sale. Returns go
+        // through a debit note, like any other posted purchase.
+        if (StockTransfer::where('purchase_order_id', $po->id)->exists()) {
+            throw ValidationException::withMessages([
+                'purchase' => "Purchase {$po->po_number} cannot be changed: it belongs to a stock transfer. Use a debit note for returns.",
+            ]);
+        }
+
         $key = (string) $data['idempotency_key'];
 
         // Fast path: this exact edit was already applied (double-click / retry).
@@ -652,6 +662,13 @@ final class PurchaseService
 
     public function deletePurchase(Store $store, User $user, PurchaseOrder $po): void
     {
+        // Transfer bridge guard — see updatePurchase.
+        if (StockTransfer::where('purchase_order_id', $po->id)->exists()) {
+            throw ValidationException::withMessages([
+                'purchase' => "Purchase {$po->po_number} cannot be deleted: it belongs to a stock transfer. Use a debit note for returns.",
+            ]);
+        }
+
         Log::info('Deleting purchase', [
             'store_id'    => $store->id,
             'user_id'     => $user->id,

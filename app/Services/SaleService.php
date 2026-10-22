@@ -15,6 +15,7 @@ use App\Models\Loan;
 use App\Models\StockBatch;
 use App\Models\StockLedger;
 use App\Models\StockSnapshot;
+use App\Models\StockTransfer;
 use App\Models\StockUnit;
 use App\Models\StockUnitEvent;
 use App\Models\Store;
@@ -550,6 +551,15 @@ final class SaleService
      */
     private function assertSaleEditable(Store $store, Invoice $invoice): void
     {
+        // A stock-transfer sale is one half of a two-store bridge — editing
+        // or deleting it would desync the target store's purchase. Returns
+        // go through a credit note, like any other posted sale.
+        if (StockTransfer::where('sale_invoice_id', $invoice->id)->exists()) {
+            throw ValidationException::withMessages([
+                'invoice' => "Sale {$invoice->invoice_number} cannot be changed: it belongs to a stock transfer. Use a credit note for returns.",
+            ]);
+        }
+
         // A loan was issued against this invoice — the sale is frozen until
         // the loan is resolved. (Loans reference invoices; editing the sale
         // underneath would corrupt the loan's principal basis.)

@@ -20,7 +20,7 @@ class SupplierController extends Controller
         Gate::authorize('suppliers.index');
 
         $user = $request->user();
-        $query = Supplier::query()->with(['address', 'store:id,name']);
+        $query = Supplier::query()->with(['address', 'store:id,name', 'linkedStore:id,name,code']);
 
         // Scope to store if user belongs to a specific outlet
         if ($user->store_id) {
@@ -63,10 +63,18 @@ class SupplierController extends Controller
             ? []
             : Store::select('id', 'name')->orderBy('name')->get();
 
+        // Stores that can be attached to a supplier (Suppliers → Attach Store).
+        // The supplier's own store is excluded per-row in the picker.
+        $attachableStores = Store::where('is_active', true)
+            ->select('id', 'name', 'code')
+            ->orderBy('name')
+            ->get();
+
         return Inertia::render('App/Suppliers/Index', [
             'suppliers' => $suppliers,
             'stats'     => $stats,
             'stores'    => $stores,
+            'attachableStores' => $attachableStores,
             'filters'   => $request->only(['search', 'is_active', 'trashed']),
         ]);
     }
@@ -136,6 +144,97 @@ class SupplierController extends Controller
         return redirect()
             ->route('app.suppliers.index')
             ->with('success', 'Supplier updated successfully.');
+    }
+
+    /**
+     * Attach a chain store to this supplier (one-time setup for stock
+     * transfers). The supplier record becomes the store's identity in this
+     * store's books: GSTIN / email / address are synced from the stores
+     * table, and linked_store_id marks the pairing. One supplier per
+     * linked store within an owner store.
+     */
+    public function attachStore(Request $request, Supplier $supplier): RedirectResponse
+    {
+        Gate::authorize('suppliers.update');
+
+        // A store-bound user can only attach stores on their own suppliers.
+        if ($request->user()->store_id && (int) $supplier->store_id !== (int) $request->user()->store_id) {
+            abort(403);
+        }
+
+        $validated = $request->validate([
+            'store_id' => ['required', 'integer', 'exists:stores,id'],
+        ]);
+
+        $store = Store::with('address')->findOrFail($validated['store_id']);
+
+        if (! $store->is_active) {
+            return back()->withErrors(['store_id' => 'The selected store is not active.']);
+        }
+        if ((int) $store->id === (int) $supplier->store_id) {
+            return back()->withErrors(['store_id' => 'A supplier cannot be attached to its own store.']);
+        }
+
+        $alreadyAttached = Supplier::where('store_id', $supplier->store_id)
+            ->where('linked_store_id', $store->id)
+            ->where('id', '!=', $supplier->id)
+            ->exists();
+        if ($alreadyAttached) {
+            return back()->withErrors(['store_id' => "Store {$store->name} is already attached to another supplier in this store."]);
+        }
+
+        DB::transaction(function () use ($supplier, $store) {
+            $supplier->update([
+                'linked_store_id' => $store->id,
+                // Identity facts come from the store record — the supplier
+                // now represents that store.
+                'gstin'           => $store->gstin,
+                'email'           => $store->email,
+                'phone'           => $store->phone ?: $supplier->phone,
+            ]);
+
+            if ($store->address) {
+                $a = $store->address;
+                $supplier->address()->updateOrCreate(
+                    ['addressable_type' => Supplier::class, 'addressable_id' => $supplier->id],
+                    array_filter([
+                        'line1'          => $a->line1,
+                        'line2'          => $a->line2,
+                        'village_or_area' => $a->village_or_area,
+                        'post_office'    => $a->post_office,
+                        'police_station' => $a->police_station,
+                        'city'           => $a->city,
+                        'district'       => $a->district,
+                        'state'          => $a->state,
+                        'postal_code'    => $a->postal_code,
+                        'country'        => $a->country,
+                    ], fn ($v) => $v !== null)
+                );
+            }
+        });
+
+        return redirect()
+            ->route('app.suppliers.index')
+            ->with('success', "Supplier attached to store {$store->name}. GSTIN and address synced from the store.");
+    }
+
+    /**
+     * Detach the linked store. Synced GSTIN/address stay as the supplier's
+     * own data — detaching only removes the transfer pairing.
+     */
+    public function detachStore(Request $request, Supplier $supplier): RedirectResponse
+    {
+        Gate::authorize('suppliers.update');
+
+        if ($request->user()->store_id && (int) $supplier->store_id !== (int) $request->user()->store_id) {
+            abort(403);
+        }
+
+        $supplier->update(['linked_store_id' => null]);
+
+        return redirect()
+            ->route('app.suppliers.index')
+            ->with('success', 'Store detached from supplier.');
     }
 
     public function destroy(Supplier $supplier): RedirectResponse

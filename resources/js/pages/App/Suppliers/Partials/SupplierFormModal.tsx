@@ -40,6 +40,8 @@ export interface SupplierItem {
     opening_balance: number;
     current_balance: number;
     is_active: boolean;
+    linked_store_id?: number | null;
+    linked_store?: { id: number; name: string; code: string | null } | null;
     address?: SupplierAddress | null;
     store?: { id: number; name: string };
 }

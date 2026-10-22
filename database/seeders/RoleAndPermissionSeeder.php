@@ -40,6 +40,8 @@ class RoleAndPermissionSeeder extends Seeder
 
             'profile.manage.gst.status',
 
+            'transfers.index', 'transfers.view', 'transfers.create', 'transfers.update', 'transfers.delete',
+
 
             // Add new permissions here line-by-line during dev/production deployments
         ];

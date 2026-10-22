@@ -25,6 +25,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
     'opening_balance',
     'current_balance',
     'is_active',
+    'linked_store_id',
 ])]
 class Supplier extends Model
 {
@@ -39,6 +40,7 @@ class Supplier extends Model
     {
         return [
             'store_id' => 'integer',
+            'linked_store_id' => 'integer',
             'opening_balance' => 'decimal:2',
             'current_balance' => 'decimal:2',
             'is_active' => 'boolean',
@@ -70,6 +72,15 @@ class Supplier extends Model
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);
+    }
+
+    /**
+     * The chain store this supplier record represents, once attached
+     * (Suppliers → Attach Store). Null for ordinary external suppliers.
+     */
+    public function linkedStore(): BelongsTo
+    {
+        return $this->belongsTo(Store::class, 'linked_store_id');
     }
 
     public function address(): MorphOne

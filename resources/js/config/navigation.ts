@@ -141,6 +141,18 @@ export const COMMON_NAV: RoleNavigation = {
                     icon: ArrowLeftRight,
                     permission: 'sales.create',
                 },
+                {
+                    title: 'Stock Transfer',
+                    href: '/app/transfers/create',
+                    icon: ArrowLeftRight,
+                    permission: 'transfers.create',
+                },
+                {
+                    title: 'Transfer History',
+                    href: '/app/transfers',
+                    icon: ListClock,
+                    permission: 'transfers.index',
+                },
 
             ],
         },
