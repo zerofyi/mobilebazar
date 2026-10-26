@@ -36,7 +36,7 @@ export default function Create({
     invoice,
     lines,
 }: {
-    invoice: { uuid: string; invoice_number: string; invoice_date: string; grand_total: number; party_name: string };
+    invoice: { uuid: string; invoice_number: string; invoice_date: string; grand_total: number; discount_amount: number; party_name: string };
     lines: ReturnLine[];
 }) {
     useFlashToast();
@@ -68,10 +68,16 @@ export default function Create({
     };
 
     const entries = Object.entries(selected);
+    // Preview matches the server: refunds are scaled by the share of the
+    // line totals actually paid after the bill-level discount.
+    const linesTotal = lines.reduce((s, l) => s + l.line_total, 0);
+    const billFactor = linesTotal > 0.005
+        ? Math.max(0, Math.min(1, (linesTotal - (invoice.discount_amount || 0)) / linesTotal))
+        : 1;
     const refundTotal = entries.reduce((sum, [id, q]) => {
         const line = lines.find((l) => l.id === Number(id));
         if (!line) return sum;
-        return sum + (line.line_total / line.quantity) * q;
+        return sum + (line.line_total / line.quantity) * q * billFactor;
     }, 0);
 
     const canSubmit = entries.length > 0 && reason.trim().length > 0;

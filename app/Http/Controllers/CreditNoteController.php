@@ -87,6 +87,7 @@ class CreditNoteController extends Controller
                 'invoice_number' => $invoice->invoice_number,
                 'invoice_date'   => $invoice->invoice_date->format('Y-m-d'),
                 'grand_total'    => (float) $invoice->grand_total,
+                'discount_amount' => (float) $invoice->discount_amount,
                 'party_name'     => $invoice->party?->name ?? $invoice->party?->company_name ?? '—',
             ],
             'lines' => $lines,

@@ -36,6 +36,7 @@ class StoreSupplierPaymentRequest extends FormRequest
 
             'txn_reference' => ['nullable', 'string', 'max:100'],
             'notes'         => ['nullable', 'string', 'max:1000'],
+            'idempotency_key' => ['nullable', 'uuid'],
         ];
     }
 

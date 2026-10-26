@@ -33,8 +33,13 @@ use Illuminate\Validation\ValidationException;
  *
  * Refund modes:
  *   cash   — hand cash back now (Cr 1010)
- *   adjust — reduce the invoice's receivable (Cr 1030); if the invoice was
- *            already fully paid this becomes customer credit held on the note
+ *   adjust — reduce the invoice's receivable (Cr 1030), capped at the
+ *            invoice's outstanding due; any excess must go out as cash
+ *
+ * Refund values are the posted line values scaled by the share of the
+ * bill the customer actually paid: the invoice's bill-level discount is
+ * spread over all lines pro-rata, so a return never hands the discount
+ * slice back on top of the goods value.
  */
 final class CreditNoteService
 {
@@ -96,6 +101,16 @@ final class CreditNoteService
             if ($refundMode === 'cash' && $grandTotal > (float) $invoice->paid_amount + 0.005) {
                 throw ValidationException::withMessages([
                     'refund_mode' => 'Cash refund of ' . number_format($grandTotal, 2) . ' exceeds the amount paid on this invoice (' . number_format((float) $invoice->paid_amount, 2) . '). Use Adjust mode to settle the return against the due amount.',
+                ]);
+            }
+
+            // Adjust mode settles against the receivable, so it can never
+            // exceed the outstanding due: the excess would credit a
+            // receivable that doesn't exist (no customer-credit balance is
+            // held anywhere) and drive the GL receivable negative.
+            if ($refundMode === 'adjust' && $grandTotal > (float) $invoice->due_amount + 0.005) {
+                throw ValidationException::withMessages([
+                    'refund_mode' => 'Adjust amount of ' . number_format($grandTotal, 2) . ' exceeds the due on this invoice (' . number_format((float) $invoice->due_amount, 2) . '). Use Cash mode to refund the return instead.',
                 ]);
             }
 
@@ -181,6 +196,16 @@ final class CreditNoteService
 
         $invoice->loadMissing(['items.stockUnit', 'items.batchAllocations']);
 
+        // Bill-level discount factor: the header discount was spread over
+        // every line at billing time but is stored only on the header, so
+        // refunds computed from raw line totals would hand the discount
+        // slice back as well. Scale by the paid share of the line totals.
+        $linesTotal   = (float) $invoice->items->sum('line_total');
+        $billDiscount = (float) $invoice->discount_amount;
+        $billFactor   = $linesTotal > 0.005
+            ? max(0.0, min(1.0, ($linesTotal - $billDiscount) / $linesTotal))
+            : 1.0;
+
         // Already-returned qty per invoice item (from prior credit notes).
         $returnedQty = DB::table('credit_note_items')
             ->join('credit_notes', 'credit_notes.id', '=', 'credit_note_items.credit_note_id')
@@ -216,11 +241,12 @@ final class CreditNoteService
                 ]);
             }
 
-            // Pro-rata refund from the posted line values.
+            // Pro-rata refund from the posted line values, scaled by the
+            // bill-discount factor so the refund matches what was paid.
             $ratio = $qty / (int) $item->quantity;
             $lineBase = (float) $item->line_total - (float) $item->tax_amount;
-            $refundSubtotal = $this->r2($lineBase * $ratio);
-            $refundTax = $this->r2((float) $item->tax_amount * $ratio);
+            $refundSubtotal = $this->r2($lineBase * $ratio * $billFactor);
+            $refundTax = $this->r2((float) $item->tax_amount * $ratio * $billFactor);
 
             $lines[] = [
                 'invoice_item_id'    => $item->id,

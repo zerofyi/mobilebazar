@@ -124,11 +124,13 @@ class InventoryController extends Controller
         $store = $user->ownedStore;
         abort_unless($store && $store->is_active, 403, 'No active store assigned to this user.');
 
-        $units = StockUnit::with(['productVariant:id,product_id,variant_name,sku', 'productVariant.product:id,name'])
+        /** @var \Illuminate\Database\Eloquent\Collection<int, StockUnit> $unitModels */
+        $unitModels = StockUnit::with(['productVariant:id,product_id,variant_name,sku', 'productVariant.product:id,name'])
             ->where('store_id', $store->id)
             ->whereIn('status', ['available', 'reserved'])
             ->orderBy('id')
-            ->get()
+            ->get();
+        $units = $unitModels
             ->map(fn (StockUnit $u) => [
                 'id'              => $u->id,
                 'product_name'    => $u->productVariant?->product?->name ?? $u->manual_item_name ?? '—',
@@ -142,11 +144,13 @@ class InventoryController extends Controller
                 'retail_price'    => $u->selling_price !== null ? (float) $u->selling_price : null,
             ])->values();
 
-        $batches = StockBatch::with(['productVariant:id,product_id,variant_name,sku', 'productVariant.product:id,name'])
+        /** @var \Illuminate\Database\Eloquent\Collection<int, StockBatch> $batchModels */
+        $batchModels = StockBatch::with(['productVariant:id,product_id,variant_name,sku', 'productVariant.product:id,name'])
             ->where('store_id', $store->id)
             ->where('remaining_qty', '>', 0)
             ->orderByDesc('remaining_qty')
-            ->get()
+            ->get();
+        $batches = $batchModels
             ->map(fn (StockBatch $b) => [
                 'id'              => $b->id,
                 'product_name'    => $b->productVariant?->product?->name ?? $b->manual_item_name ?? '—',
@@ -165,6 +169,116 @@ class InventoryController extends Controller
             'units' => $units,
             'batches' => $batches,
         ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Label printing — same stock dataset as the print sheet, plus the fields
+    | a sticky label needs (variant barcode + MRP, both IMEIs, serial). The
+    | Labels page renders/previews everything client-side and persists the
+    | operator's setup in the browser; this endpoint is read-only data.
+    |--------------------------------------------------------------------------
+    */
+    public function labels(Request $request): Response
+    {
+        $user = $request->user();
+        abort_unless($user->can('inventory.view'), 403);
+
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+        abort_unless($store && $store->is_active, 403, 'No active store assigned to this user.');
+
+        $variantCols = 'productVariant:id,product_id,variant_name,sku,barcode,mrp,selling_price';
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, StockUnit> $unitModels */
+        $unitModels = StockUnit::with([$variantCols, 'productVariant.product:id,name,warranty_months'])
+            ->where('store_id', $store->id)
+            ->whereIn('status', ['available', 'reserved'])
+            ->orderBy('id')
+            ->get();
+        $units = $unitModels
+            ->map(fn (StockUnit $u) => [
+                'id'              => $u->id,
+                'product_name'    => $u->productVariant?->product?->name ?? $u->manual_item_name ?? '—',
+                'variant_name'    => $u->productVariant?->variant_name,
+                'sku'             => $u->productVariant?->sku,
+                'barcode'         => $u->productVariant?->barcode,
+                'imei1'           => $u->imei1,
+                'imei2'           => $u->imei2,
+                'serial_number'   => $u->serial_number,
+                'condition'       => $u->device_condition,
+                'warranty'        => $this->labelWarrantyText($u),
+                'status'          => $u->status,
+                'mrp'             => $u->productVariant?->mrp !== null ? (float) $u->productVariant->mrp : null,
+                'wholesale_price' => $u->wholesale_price !== null ? (float) $u->wholesale_price : null,
+                'retail_price'    => $u->selling_price !== null
+                    ? (float) $u->selling_price
+                    : ($u->productVariant?->selling_price !== null ? (float) $u->productVariant->selling_price : null),
+            ])->values();
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, StockBatch> $batchModels */
+        $batchModels = StockBatch::with([$variantCols, 'productVariant.product:id,name'])
+            ->where('store_id', $store->id)
+            ->where('remaining_qty', '>', 0)
+            ->orderByDesc('remaining_qty')
+            ->get();
+        $batches = $batchModels
+            ->map(fn (StockBatch $b) => [
+                'id'              => $b->id,
+                'product_name'    => $b->productVariant?->product?->name ?? $b->manual_item_name ?? '—',
+                'variant_name'    => $b->productVariant?->variant_name,
+                'sku'             => $b->productVariant?->sku,
+                'barcode'         => $b->productVariant?->barcode,
+                'batch_number'    => $b->batch_number,
+                'qty'             => (int) $b->remaining_qty,
+                'warranty'        => $b->remaining_warranty,
+                'mrp'             => $b->productVariant?->mrp !== null ? (float) $b->productVariant->mrp : null,
+                'wholesale_price' => $b->wholesale_price !== null ? (float) $b->wholesale_price : null,
+                'retail_price'    => $b->selling_price !== null
+                    ? (float) $b->selling_price
+                    : ($b->productVariant?->selling_price !== null ? (float) $b->productVariant->selling_price : null),
+            ])->values();
+
+        return inertia('Billing/Inventory/Labels', [
+            'store' => ['name' => $store->name, 'code' => $store->code],
+            'units' => $units,
+            'batches' => $batches,
+        ]);
+    }
+
+    /**
+     * Warranty text for a unit's label — same priority as the sale flow
+     * (SaleEntryController::unitWarrantyText): free-text remaining_warranty,
+     * else activation + product warranty months, else the expiry date.
+     */
+    private function labelWarrantyText(StockUnit $u): ?string
+    {
+        if ($u->remaining_warranty) {
+            return $u->remaining_warranty;
+        }
+
+        $today = now()->startOfDay();
+        $end = null;
+
+        $months = $u->productVariant?->product?->warranty_months;
+        if ($u->activation_date && $months) {
+            $end = $u->activation_date->copy()->startOfDay()->addMonths((int) $months);
+        } elseif ($u->warranty_expiry_date) {
+            $end = $u->warranty_expiry_date->copy()->startOfDay();
+        }
+
+        if ($end === null) {
+            return null;
+        }
+
+        if ($end->lt($today)) {
+            return 'Out of warranty';
+        }
+
+        $m = (int) $today->diffInMonths($end);
+        $d = (int) $today->copy()->addMonths($m)->diffInDays($end);
+
+        return $m > 0 ? "{$m} mo" . ($d > 0 ? " {$d} d" : '') . ' left' : "{$d} d left";
     }
 
     /*

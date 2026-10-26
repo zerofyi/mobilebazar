@@ -91,6 +91,9 @@ export default function SupplierPaymentCreate({ outstandingPos, preloaded, prese
     const [txnReference, setTxnReference] = useState("");
     const [notes, setNotes] = useState("");
     const [submitting, setSubmitting] = useState(false);
+    // One idempotency key per page visit: a retry after a lost response
+    // replays on the server instead of paying the supplier twice.
+    const [idemKey] = useState(() => crypto.randomUUID());
     const [errors, setErrors] = useState<Record<string, string[]>>({});
     const [serverError, setServerError] = useState<string | null>(null);
     const [amountTouched, setAmountTouched] = useState(false);
@@ -159,6 +162,7 @@ export default function SupplierPaymentCreate({ outstandingPos, preloaded, prese
             paid_at: paidAt,
             txn_reference: txnReference.trim() || null,
             notes: notes.trim() || null,
+            idempotency_key: idemKey,
         };
         if (!autoAllocate) {
             payload.allocations = selected.map((uuid) => ({
@@ -246,7 +250,7 @@ export default function SupplierPaymentCreate({ outstandingPos, preloaded, prese
                             </div>
                         </CardHeader>
                         <CardContent>
-                            <div className="max-h-[420px] overflow-y-auto rounded-md border border-border divide-y">
+                            <div className="max-h-105 overflow-y-auto rounded-md border border-border divide-y">
                                 {filteredPos.length === 0 && (
                                     <div className="p-6 text-center text-sm text-muted-foreground">
                                         {outstandingPos.length === 0

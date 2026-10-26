@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Exceptions\AccountingException;
 use App\Exceptions\MonthLockedException;
 use App\Models\Customer;
+use App\Models\CreditNote;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\InvoiceItemBatchAllocation;
@@ -569,6 +570,18 @@ final class SaleService
             ]);
         }
 
+        // A credit note has already returned part of this sale: stock was
+        // restored and summaries negated for that slice. Reversing the full
+        // original sale here would restore the returned stock a second
+        // time (and could flip a returned-then-resold unit back to
+        // available, un-selling the newer sale). The sale is final once a
+        // return exists against it.
+        if (CreditNote::where('invoice_id', $invoice->id)->where('status', 'issued')->exists()) {
+            throw ValidationException::withMessages([
+                'invoice' => "Sale {$invoice->invoice_number} cannot be changed: a credit note has been issued against it. The sale is final — use another credit note for further returns.",
+            ]);
+        }
+
         $invoice->loadMissing(['items.stockUnit:id,imei1,imei2,serial_number,status,store_id,product_variant_id,device_condition']);
 
         foreach ($invoice->items as $item) {
@@ -631,6 +644,15 @@ final class SaleService
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            // Idempotent replay: a retried submission carrying the same key
+            // returns the invoice as-is instead of booking the money twice.
+            $idemKey = isset($payment['idempotency_key']) && trim((string) $payment['idempotency_key']) !== ''
+                ? trim((string) $payment['idempotency_key'])
+                : null;
+            if ($idemKey && $invoice->payments()->where('idempotency_key', $idemKey)->exists()) {
+                return $invoice;
+            }
+
             $amount = $this->r2($payment['amount'] ?? 0);
             if ($amount <= 0) {
                 throw ValidationException::withMessages(['amount' => 'Collection amount must be positive.']);
@@ -658,11 +680,16 @@ final class SaleService
                 'payment_mode' => $mode,
                 'amount'       => $amount,
                 'reference'    => $reference,
+                'idempotency_key' => $idemKey,
                 'created_by'   => $user->id,
             ]);
 
             $paid = $this->r2((float) $invoice->paid_amount + $amount);
-            $newDue = $this->r2((float) $invoice->grand_total - $paid);
+            // The new due comes off the STORED due, never grand − paid: an
+            // adjust-mode credit note lowers due without touching
+            // paid_amount, and recomputing from the grand total would
+            // resurrect the adjusted slice as collectable.
+            $newDue = max(0.0, $this->r2((float) $invoice->due_amount - $amount));
             $invoice->update([
                 'paid_amount'    => $paid,
                 'due_amount'     => $newDue,

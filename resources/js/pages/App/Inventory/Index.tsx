@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { Head, router } from "@inertiajs/react";
+import { Head, Link, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
 import { usePermissions } from "@/hooks/user-permissions";
 import {
-    Boxes, Cpu, Search, IndianRupee, PackageCheck, Layers, ScanSearch, AlertTriangle, X,
+    Boxes, Cpu, Search, IndianRupee, PackageCheck, Layers, ScanSearch, AlertTriangle, X, Tag,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -227,9 +227,16 @@ export default function InventoryIndex({ tab, filters, summary, units, batches }
                             Live stock across the store — every serialized unit and every bulk batch.
                         </p>
                     </div>
-                    <Button onClick={() => setVerifyOpen(true)} className="shrink-0">
-                        <ScanSearch className="mr-1.5 size-4" /> Verify Stock
-                    </Button>
+                    <div className="flex shrink-0 gap-2">
+                        <Button asChild variant="outline">
+                            <Link href="/app/inventory/labels">
+                                <Tag className="mr-1.5 size-4" /> Print Labels
+                            </Link>
+                        </Button>
+                        <Button onClick={() => setVerifyOpen(true)} className="shrink-0">
+                            <ScanSearch className="mr-1.5 size-4" /> Verify Stock
+                        </Button>
+                    </div>
                 </div>
 
                 {/* Summary Stats Bar */}

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\DTOs\JournalEntryData;
+use App\Models\DebitNote;
 use App\Models\Payment;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
@@ -29,12 +30,11 @@ use Illuminate\Validation\ValidationException;
  * Accounting\PurchaseJournal (cash→1010, bank/neft/rtgs/imps/cheque→1020,
  * upi→1025, card→1026).
  *
- * Idempotency note: the `payments` table has no idempotency_key column, so a
- * retried request after a committed response creates a second payment. Journal
- * entry numbers (JE-SUPPAY-<po_number>-<seq>) are idempotent per
- * AccountingService::post() only within a single logical attempt. If true
- * client-side retry safety is needed, add an `idempotency_key` column with a
- * unique index to `payments` and check it here before inserting.
+ * Idempotency: callers may pass `idempotency_key` (stored on every payment
+ * row the request creates). A retried request with the same key returns the
+ * original rows without booking anything twice. Requests without a key keep
+ * the historical behaviour — journal entry numbers (JE-SUPPAY-<po_number>-
+ * <seq>) only dedupe within a single logical attempt.
  */
 final class SupplierPaymentService
 {
@@ -64,6 +64,7 @@ final class SupplierPaymentService
      *   paid_at: string,
      *   txn_reference?: string|null,
      *   notes?: string|null,
+     *   idempotency_key?: string|null,
      * } $data
      *
      * @return list<Payment> one payment row per PO allocation, in allocation order
@@ -98,6 +99,21 @@ final class SupplierPaymentService
                 }
             }
 
+            // ── Idempotent replay (after the PO locks, so a concurrent twin
+            //    request waits for the first to commit and then sees its rows)
+            $idemKey = isset($data['idempotency_key']) && trim((string) $data['idempotency_key']) !== ''
+                ? trim((string) $data['idempotency_key'])
+                : null;
+            if ($idemKey) {
+                $existing = Payment::where('store_id', $store->id)
+                    ->where('idempotency_key', $idemKey)
+                    ->orderBy('id')
+                    ->get();
+                if ($existing->isNotEmpty()) {
+                    return $existing->all();
+                }
+            }
+
             // ── 2. Build allocations (explicit or FIFO auto-allocation) ───────
             $allocations = $this->buildAllocations($data, $byUuid, $fail);
 
@@ -124,6 +140,7 @@ final class SupplierPaymentService
                     'payment_mode'  => $mode,
                     'amount'        => JournalEntryData::fromPaise($paise),
                     'txn_reference' => $data['txn_reference'] ?? null,
+                    'idempotency_key' => $idemKey,
                     'status'        => 'completed',
                     'paid_at'       => $paidAt,
                     'created_by'    => $user->id,
@@ -202,7 +219,7 @@ final class SupplierPaymentService
                 }
 
                 $po       = $byUuid[$uuid];
-                $duePaise = JournalEntryData::toPaise($po->due_amount);
+                $duePaise = JournalEntryData::toPaise((float) $po->due_amount);
 
                 if ($paise > $duePaise) {
                     $fail(
@@ -242,7 +259,7 @@ final class SupplierPaymentService
                 break;
             }
 
-            $duePaise = JournalEntryData::toPaise($po->due_amount);
+            $duePaise = JournalEntryData::toPaise((float) $po->due_amount);
 
             if ($duePaise <= 0) {
                 continue;
@@ -311,9 +328,15 @@ final class SupplierPaymentService
      */
     private function applyToPurchase(PurchaseOrder $po, int $paise): void
     {
-        $newPaid = JournalEntryData::toPaise($po->paid_amount) + $paise;
-        $grand   = JournalEntryData::toPaise($po->grand_total);
-        $newDue  = max(0, $grand - $newPaid);
+        $newPaid = JournalEntryData::toPaise((float) $po->paid_amount) + $paise;
+        $grand   = JournalEntryData::toPaise((float) $po->grand_total);
+        // Debit notes reduce what is owed without touching paid_amount —
+        // due is grand − paid − returns. Recomputing as grand − paid alone
+        // would resurrect the returned slice as payable a second time.
+        $returns = JournalEntryData::toPaise(DebitNote::where('purchase_order_id', $po->id)
+            ->where('status', 'issued')
+            ->sum('grand_total'));
+        $newDue  = max(0, $grand - $newPaid - $returns);
 
         $po->update([
             'paid_amount'    => JournalEntryData::fromPaise($newPaid),

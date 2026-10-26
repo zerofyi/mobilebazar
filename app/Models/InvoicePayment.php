@@ -20,6 +20,7 @@ class InvoicePayment extends Model
         'amount',
         'reference',
         'purchase_order_id',
+        'idempotency_key',
         'created_by',
     ];
 

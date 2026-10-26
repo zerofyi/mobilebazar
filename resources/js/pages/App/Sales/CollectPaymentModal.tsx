@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { router } from "@inertiajs/react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,12 @@ export default function CollectPaymentModal({
     const [pinError, setPinError] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [formError, setFormError] = useState<string | null>(null);
+    // One idempotency key per modal opening: PIN retries and lost-response
+    // retries reuse it, so the server books the collection only once.
+    const idemKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (open) idemKeyRef.current = crypto.randomUUID();
+    }, [open ]);
 
     const proceed = () => {
         const amt = parseFloat(amount) || 0;
@@ -77,6 +83,7 @@ export default function CollectPaymentModal({
             mode,
             amount: parseFloat(amount) || 0,
             reference: reference.trim() || undefined,
+            idempotency_key: idemKeyRef.current ?? undefined,
         };
         router.post(
             `/app/sales/${invoiceUuid}/collect`,

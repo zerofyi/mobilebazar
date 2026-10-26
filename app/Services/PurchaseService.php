@@ -229,6 +229,14 @@ final class PurchaseService
             ]);
         }
 
+        // Editing a DRAFT is posting it: the request layer forbids
+        // is_draft=true on updates, so a draft arriving here is being
+        // finalized. Drafts have no stock, journals or summaries to
+        // reverse — they take the dedicated path below.
+        if ($po->status === 'draft') {
+            return $this->postDraft($store, $user, $po, $data);
+        }
+
         $key = (string) $data['idempotency_key'];
 
         // Fast path: this exact edit was already applied (double-click / retry).
@@ -290,14 +298,20 @@ final class PurchaseService
                     $po->vendor()->associate($newVendor);
                 }
 
+                $dnTotal = $this->debitNotesTotal($po);
+
                 $po->update([
                     'subtotal'             => $this->r2($data['subtotal']),
                     'tax_amount'           => $this->r2($data['tax_amount']),
                     'discount_amount'      => $this->r2($data['discount_amount'] ?? 0),
                     'shipping_charge'      => $this->r2($data['shipping_charge'] ?? 0),
                     'grand_total'          => $this->r2($data['grand_total']),
-                    'due_amount'           => $this->r2($data['grand_total']) - $this->r2($po->paid_amount),
-                    'payment_status'       => $this->r2($data['grand_total']) <= $this->r2($po->paid_amount) ? 'paid' : ($this->r2($po->paid_amount) > 0 ? 'partial' : 'unpaid'),
+                    // Due is NOT grand − paid: debit notes reduce what is
+                    // owed without touching paid, and recomputing from the
+                    // grand total would resurrect the returned slice as
+                    // payable a second time.
+                    'due_amount'           => max(0.0, $this->r2($data['grand_total']) - $this->r2($po->paid_amount) - $dnTotal),
+                    'payment_status'       => $this->paymentStatusFor($po, (float) $data['grand_total'], $dnTotal),
                     'notes'                => $data['notes'] ?? null,
                     'vendor_invoice_no'    => $data['vendor_invoice_no'] ?? null,
                     'due_date'             => $data['due_date'] ?? $po->due_date,
@@ -310,7 +324,13 @@ final class PurchaseService
 
                 // 4. Journal (suffixed entry numbers — the originals still exist)
                 //    + summaries from the new payload.
-                $this->journal->post($po->fresh(), $store, $user, $data, '-R' . $newRevision);
+                //    The JE-PAY repost must cover ONLY the bill-time payment:
+                //    supplier payments (JE-SUPPAY-*) are deliberately NOT
+                //    reversed by an edit, so reposting the payload's full
+                //    paid_amount would book that money a second time.
+                $journalData = $data;
+                $journalData['paid_amount'] = max(0.0, $this->r2((float) ($data['paid_amount'] ?? 0)) - $this->supplierPaymentsTotal($po));
+                $this->journal->post($po->fresh(), $store, $user, $journalData, '-R' . $newRevision);
                 $this->summaries->record(SummaryDeltaFactory::forPurchase($store->id, $data));
 
                 return $po->fresh();
@@ -329,6 +349,129 @@ final class PurchaseService
             }
             throw $e;
         }
+    }
+
+    /**
+     * Finalize a draft through the edit endpoint. Draft items carry no
+     * stock, journals or summaries, so posting a draft = replace its items
+     * with the submitted lines and run the same posting steps create uses
+     * (stock, journal, summaries), keeping the draft's PO number and
+     * identity. Mirrors createPurchase's contract for the money fields.
+     */
+    private function postDraft(Store $store, User $user, PurchaseOrder $po, array $data): PurchaseOrder
+    {
+        $key = (string) $data['idempotency_key'];
+
+        // Fail fast, like create: nothing posts into a locked month.
+        if ($this->summaries->isMonthLocked($store->id, $po->order_date->format('Y-m'))) {
+            throw MonthLockedException::for($store->id, $po->order_date->format('Y-m'));
+        }
+
+        Log::info('Posting draft purchase', [
+            'store_id'    => $store->id,
+            'user_id'     => $user->id,
+            'purchase_id' => $po->id,
+            'po_number'   => $po->po_number,
+        ]);
+
+        try {
+            return DB::transaction(function () use ($store, $user, $po, $data, $key) {
+                $po = PurchaseOrder::where('store_id', $store->id)
+                    ->where('id', $po->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                // A concurrent submit already posted it — replay, not error.
+                if ($po->status !== 'draft') {
+                    return $po;
+                }
+                if ($po->edit_idempotency_key && hash_equals($po->edit_idempotency_key, $key)) {
+                    return $po;
+                }
+
+                // Safe wholesale replacement: draft items have no stock
+                // rows, no ledger entries and no financial postings.
+                $po->items()->delete();
+
+                if (! empty($data['party_id']) && ! empty($data['party_type'])) {
+                    $po->vendor()->associate($this->resolveVendor($data, $store));
+                }
+
+                $po->update([
+                    'status'                   => 'completed',
+                    'subtotal'                 => $this->r2($data['subtotal']),
+                    'tax_amount'               => $this->r2($data['tax_amount']),
+                    'discount_amount'          => $this->r2($data['discount_amount'] ?? 0),
+                    'shipping_charge'          => $this->r2($data['shipping_charge'] ?? 0),
+                    'grand_total'              => $this->r2($data['grand_total']),
+                    'paid_amount'              => $this->r2($data['paid_amount'] ?? 0),
+                    'due_amount'               => $this->r2($data['due_amount'] ?? 0),
+                    'payment_status'           => $data['payment_status'],
+                    'payment_mode'             => $data['payment_mode'] ?? 'cash',
+                    'notes'                    => $data['notes'] ?? null,
+                    'vendor_invoice_no'        => $data['vendor_invoice_no'] ?? null,
+                    'invoice_document_path'    => $data['invoice_document_path'] ?? $po->invoice_document_path,
+                    'additional_document_path' => $data['additional_document_path'] ?? $po->additional_document_path,
+                    'approved_by'              => $user->id,
+                    'approved_at'              => now(),
+                    'revision'                 => $po->revision + 1,
+                    'revised_at'               => now(),
+                    'revised_by'               => $user->id,
+                    'edit_idempotency_key'     => $key,
+                ]);
+
+                $snapshots = $this->lockSnapshots($store->id, $data['lines']);
+                foreach ($data['lines'] as $lineData) {
+                    ! empty($lineData['is_serialized'])
+                        ? $this->processSerializedLine($po, $store, $lineData, $user, false, $snapshots)
+                        : $this->processBulkLine($po, $store, $lineData, $user, false, $snapshots);
+                }
+
+                $this->journal->post($po->fresh(), $store, $user, $data);
+                $this->summaries->record(SummaryDeltaFactory::forPurchase($store->id, $data));
+
+                return $po->fresh();
+            }, self::TX_ATTEMPTS);
+        } catch (UniqueConstraintViolationException $e) {
+            if ($this->isActiveIdentifierViolation($e)) {
+                throw ValidationException::withMessages([
+                    'lines' => 'A device with this IMEI or serial number is already in active stock: '
+                        . $this->duplicateIdentifier($e)
+                        . '. It may have been purchased concurrently — please review and retry.',
+                ]);
+            }
+            throw $e;
+        }
+    }
+
+    /** Total value of issued debit notes recorded against this PO. */
+    private function debitNotesTotal(PurchaseOrder $po): float
+    {
+        return $this->r2(DebitNote::where('purchase_order_id', $po->id)
+            ->where('status', 'issued')
+            ->sum('grand_total'));
+    }
+
+    /**
+     * Money recorded against this PO through the payments table (supplier
+     * payments, buyback settlement) — everything NOT booked by the
+     * bill-time JE-PAY journal.
+     */
+    private function supplierPaymentsTotal(PurchaseOrder $po): float
+    {
+        return $this->r2(Payment::where('payable_type', PurchaseOrder::class)
+            ->where('payable_id', $po->id)
+            ->where('status', 'completed')
+            ->sum('amount'));
+    }
+
+    /** Payment status consistent with due = grand − paid − debit notes. */
+    private function paymentStatusFor(PurchaseOrder $po, float $grandTotal, float $dnTotal): string
+    {
+        $paid = $this->r2($po->paid_amount);
+        $due  = $this->r2($grandTotal) - $paid - $dnTotal;
+
+        return $due <= 0.0 ? 'paid' : ($paid > 0 ? 'partial' : 'unpaid');
     }
 
     /**
@@ -667,6 +810,15 @@ final class PurchaseService
             throw ValidationException::withMessages([
                 'purchase' => "Purchase {$po->po_number} cannot be deleted: it belongs to a stock transfer. Use a debit note for returns.",
             ]);
+        }
+
+        // Drafts never posted stock, journals or summaries — deleting one
+        // is a purge, not a reversal (the reversal path expects snapshots
+        // and a posted summary to negate, neither of which a draft has).
+        if ($po->status === 'draft') {
+            $this->purgeDraft($store, $po);
+
+            return;
         }
 
         Log::info('Deleting purchase', [
@@ -1138,7 +1290,11 @@ final class PurchaseService
                 'landed_cost'            => $this->r2($unitData['unit_landed_cost'] ?? 0),
                 'wholesale_price'        => $this->positiveOrNull($unitData['wholesale_price'] ?? null),
                 'selling_price'          => $this->positiveOrNull($unitData['selling_price'] ?? null),
-                'is_margin_scheme'       => (bool) ($unitData['is_margin_scheme'] ?? false),
+                // Per-unit flag wins; otherwise the line's — same fallback
+                // createSerializedUnit uses, so service-built payloads
+                // (buyback, stock transfer) that only set the line flag
+                // still land margin units correctly.
+                'is_margin_scheme'       => (bool) ($unitData['is_margin_scheme'] ?? $item->is_margin_scheme),
                 'purchase_order_id'      => $po->id,
                 'purchase_order_item_id' => $item->id,
                 'activation_date'        => $activationDate,

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Invoice;
+use App\Models\Payment;
 use App\Models\PurchaseOrder;
 use App\Models\Store;
 use App\Models\User;
@@ -18,8 +19,12 @@ use Illuminate\Validation\ValidationException;
  * atomic transaction.
  *
  * Two documents are created together:
- *   1. A purchase (bill_type 'pv' — the customer is an unregistered individual)
- *      that brings the old device into stock.
+ *   1. A purchase (bill_type 'pv' — the customer is an unregistered
+ *      individual) that brings the old device into stock. In a
+ *      GST-registered store the purchase is GST-billed under the margin
+ *      scheme, exactly as the purchase screen's rules decide for an
+ *      unregistered vendor — so when the device is resold, GST is charged
+ *      only on the margin, not the full price.
  *   2. A sale for the new device(s), with the buyback value as a locked
  *      payment split (mode 'buyback') linked to the purchase bill.
  *
@@ -72,7 +77,7 @@ final class BuybackService
             }
 
             // 1. The purchase: old device into stock, customer as vendor.
-            $purchase = $this->purchases->processPurchase($store, $user, $this->buildPurchaseData($saleData, $buybackData, $key));
+            $purchase = $this->purchases->processPurchase($store, $user, $this->buildPurchaseData($store, $saleData, $buybackData, $key));
 
             // 2. The sale: the frontend already injected the locked buyback
             //    split (mode 'buyback', amount = agreed value) so the cashier
@@ -110,6 +115,25 @@ final class BuybackService
                 'payment_mode'   => 'buyback',
             ]);
 
+            // Payment history: the settlement is real money movement, so
+            // the purchase carries a payments row like any supplier
+            // payment — mode 'buyback', reference = the sale invoice. No
+            // journal here: the sale's journal already posted the Dr 2010
+            // that settles this payable.
+            Payment::create([
+                'payable_type'  => PurchaseOrder::class,
+                'payable_id'    => $purchase->id,
+                'payer_type'    => $purchase->vendor_type,
+                'payer_id'      => $purchase->vendor_id,
+                'store_id'      => $store->id,
+                'payment_mode'  => 'buyback',
+                'amount'        => $purchase->grand_total,
+                'txn_reference' => $invoice->invoice_number,
+                'status'        => 'completed',
+                'paid_at'       => $invoice->invoice_date,
+                'created_by'    => $user->id,
+            ]);
+
             Log::info('Buyback completed', [
                 'store_id' => $store->id,
                 'invoice_id' => $invoice->id,
@@ -123,11 +147,16 @@ final class BuybackService
 
     /**
      * Build the purchase payload for the old device. bill_type 'pv':
-     * the customer is an unregistered individual — no GST, no ITC.
+     * the customer is an unregistered individual, so there is no ITC —
+     * but in a GST-registered store the purchase is still GST-billed
+     * under the margin scheme (the purchase engine's own rule for an
+     * unregistered vendor), which is what makes the device's resale
+     * taxable only on its margin.
      */
-    private function buildPurchaseData(array $saleData, array $buybackData, string $key): array
+    private function buildPurchaseData(Store $store, array $saleData, array $buybackData, string $key): array
     {
         $agreedValue = round((float) $buybackData['agreed_value'], 2);
+        $isGstBilled = ! empty($store->gstin);
 
         return [
             'idempotency_key' => 'buyback-' . $key,
@@ -135,7 +164,7 @@ final class BuybackService
             'party_id'        => (int) $buybackData['customer_id'],
             'bill_type'       => 'pv',
             'type'            => 'direct',
-            'is_gst_billed'   => false,
+            'is_gst_billed'   => $isGstBilled,
             'is_intra_state'  => true,
             'order_date'      => $saleData['invoice_date'] ?? now()->toDateString(),
             'is_draft'        => false,
@@ -148,7 +177,7 @@ final class BuybackService
                 'unit_cost'          => $agreedValue,
                 'tax_type'           => 'exclusive',
                 'tax_pct'            => 0,
-                'is_margin_scheme'   => false,
+                'is_margin_scheme'   => $isGstBilled,
                 'base_cost'          => $agreedValue,
                 'landed_cost'        => $agreedValue,
                 'tax_amount'         => 0,

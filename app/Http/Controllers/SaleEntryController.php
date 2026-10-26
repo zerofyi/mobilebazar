@@ -75,7 +75,10 @@ class SaleEntryController extends Controller
         ];
 
         return Inertia::render('App/Sales/Index', [
-            'sales'   => $sales->through(fn ($inv) => $this->serializeForIndex($inv)),
+            'sales'   => $sales->through(function ($inv) {
+                /** @var Invoice $inv */
+                return $this->serializeForIndex($inv);
+            }),
             'summary' => $summary,
             'filters' => $filters,
         ]);
@@ -181,6 +184,7 @@ class SaleEntryController extends Controller
                 ->orWhere('serial_number', $q))
             ->first();
 
+        /** @var \Illuminate\Support\Collection<int, StockUnit> $units */
         $units = $exact
             ? collect([$exact])
             : (clone $base)
@@ -298,6 +302,7 @@ class SaleEntryController extends Controller
     {
         $like = "%{$q}%";
 
+        /** @var \Illuminate\Support\Collection<int, ProductVariant> $variants */
         $variants = ProductVariant::query()
             ->join('products', 'products.id', '=', 'product_variants.product_id')
             ->leftJoin('tax_categories', 'tax_categories.id', '=', 'products.tax_category_id')
@@ -321,6 +326,7 @@ class SaleEntryController extends Controller
             return [];
         }
 
+        /** @var \Illuminate\Support\Collection<int, \Illuminate\Support\Collection<int, StockBatch>> $batchMap */
         $batchMap = StockBatch::query()
             ->where('store_id', $store->id)
             ->whereIn('product_variant_id', $variants->pluck('id')->all())
@@ -548,6 +554,7 @@ class SaleEntryController extends Controller
             'mode'         => ['required', 'string', Rule::in(['cash', 'upi', 'neft', 'rtgs', 'imps', 'cheque', 'card', 'credit_card', 'debit_card', 'bank'])],
             'amount'       => ['required', 'numeric', 'min:0.01'],
             'reference'    => ['nullable', 'string', 'max:100'],
+            'idempotency_key' => ['nullable', 'uuid'],
         ]);
 
         $invoice = Invoice::where('store_id', $store->id)->where('uuid', $sale)->firstOrFail();

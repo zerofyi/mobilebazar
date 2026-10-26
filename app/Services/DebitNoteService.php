@@ -40,9 +40,15 @@ final class DebitNoteService
     | batches are decremented with a compensating ledger row), writes the
     | debit note + items, and posts the AP reversal journal:
     |
-    |   Dr 2010 Accounts Payable   = grand_total
+    |   Dr 2010 Accounts Payable   = grand_total (what the supplier owes back)
+    |   Dr 5015 Purchase Discounts = the returned lines' bill-discount share [if > 0]
     |   Cr 1040 Inventory          = subtotal (base-cost portion)
     |   Cr 1050 Input Tax Credit   = tax_amount (ITC reversal) [if > 0]
+    |
+    | Return values come from the originating PO lines: base at carrying
+    | cost, tax as the ITC actually claimed pro-rata, less the line's
+    | pro-rata share of the bill-level discount — never more than the
+    | supplier actually charged for the goods.
     |
     | Limitations (by design, see docblock on controller):
     | - Supplier vendors only. debit_notes.supplier_id is non-polymorphic, so a
@@ -115,6 +121,31 @@ final class DebitNoteService
         $batches = $batchReq === [] ? collect()
             : StockBatch::whereIn('id', array_keys($batchReq))->orderBy('id')->lockForUpdate()->get()->keyBy('id');
 
+        // Return-value economics from the originating PO lines. A return is
+        // worth what the supplier actually charged for those goods:
+        //   base  = the stock's carrying cost (already net of line discounts)
+        //   tax   = the ITC actually claimed for the line, pro-rata
+        //           (item.tax_amount / qty) — not base × rate recomputed,
+        //           which overstates tax on GST-inclusive lines
+        //   minus this line's share of the bill-level discount, allocated
+        //   pro-rata by line_total (the purchase credited it to 5015, so the
+        //   return debits that slice back — see postJournal).
+        $poItems      = $po->items()->get()->keyBy('id');
+        $poLinesTotal = (float) $poItems->sum('line_total');
+        $billDiscount = (float) $po->discount_amount;
+        $economics = function (?int $itemId) use ($poItems, $poLinesTotal, $billDiscount): array {
+            $item = $itemId ? $poItems->get($itemId) : null;
+            if (! $item || (int) $item->ordered_qty <= 0 || (float) $item->line_total <= 0) {
+                return ['tax_per_unit' => null, 'bill_share_per_unit' => 0.0];
+            }
+            $share = $poLinesTotal > 0 ? $billDiscount * ((float) $item->line_total / $poLinesTotal) : 0.0;
+
+            return [
+                'tax_per_unit'        => (float) $item->tax_amount / (int) $item->ordered_qty,
+                'bill_share_per_unit' => $share / (int) $item->ordered_qty,
+            ];
+        };
+
         $returnLines = []; // normalized line rows, built once, used for items + totals
 
         foreach ($unitIds as $unitId) {
@@ -129,9 +160,13 @@ final class DebitNoteService
                 $fail('units', "Unit #{$unitId}" . ($unit->imei1 ? " (IMEI {$unit->imei1})" : '') . " cannot be returned: its status is '{$unit->status}' (only 'available' stock can be returned).");
             }
 
+            $eco       = $economics($unit->purchase_order_item_id);
             $taxPct    = $this->lineTaxPct($unit->purchase_order_item_id);
             $unitCost  = $this->r2($unit->base_cost);
-            $taxAmount = $this->r2($unitCost * $taxPct / 100);
+            $taxAmount = $eco['tax_per_unit'] !== null
+                ? $this->r2($eco['tax_per_unit'])
+                : $this->r2($unitCost * $taxPct / 100);
+            $billShare = $this->r2($eco['bill_share_per_unit']);
 
             $returnLines[] = [
                 'kind'             => 'unit',
@@ -143,7 +178,8 @@ final class DebitNoteService
                 'landed_cost'      => $this->r2($unit->landed_cost),
                 'tax_pct'          => $taxPct,
                 'tax_amount'       => $taxAmount,
-                'line_total'       => $this->r2($unitCost + $taxAmount),
+                'bill_share'       => $billShare,
+                'line_total'       => $this->r2($unitCost + $taxAmount - $billShare),
             ];
         }
 
@@ -159,9 +195,13 @@ final class DebitNoteService
                 $fail('batches', "Batch {$batch->batch_number}: only {$batch->remaining_qty} unit(s) in stock, cannot return {$qty}.");
             }
 
+            $eco       = $economics($batch->purchase_order_item_id);
             $taxPct    = $this->lineTaxPct($batch->purchase_order_item_id);
             $unitCost  = $this->r2($batch->base_cost);
-            $taxAmount = $this->r2($unitCost * $qty * $taxPct / 100);
+            $taxAmount = $eco['tax_per_unit'] !== null
+                ? $this->r2($eco['tax_per_unit'] * $qty)
+                : $this->r2($unitCost * $qty * $taxPct / 100);
+            $billShare = $this->r2($eco['bill_share_per_unit'] * $qty);
 
             $returnLines[] = [
                 'kind'             => 'batch',
@@ -174,14 +214,19 @@ final class DebitNoteService
                 'landed_cost'      => $this->r2($batch->landed_cost),
                 'tax_pct'          => $taxPct,
                 'tax_amount'       => $taxAmount,
-                'line_total'       => $this->r2($unitCost * $qty + $taxAmount),
+                'bill_share'       => $billShare,
+                'line_total'       => $this->r2($unitCost * $qty + $taxAmount - $billShare),
             ];
         }
 
         // 3. Totals — derived entirely from the validated lines above.
-        $subtotal   = $this->r2(collect($returnLines)->sum(fn ($l) => $l['unit_cost'] * $l['quantity']));
-        $taxTotal   = $this->r2(collect($returnLines)->sum('tax_amount'));
-        $grandTotal = $this->r2($subtotal + $taxTotal);
+        //    grand = Σ line_total = subtotal + tax − bill-discount share, so
+        //    the journal (Dr 2010 grand + Dr 5015 share = Cr 1040 + Cr 1050)
+        //    balances by construction.
+        $subtotal       = $this->r2(collect($returnLines)->sum(fn ($l) => $l['unit_cost'] * $l['quantity']));
+        $taxTotal       = $this->r2(collect($returnLines)->sum('tax_amount'));
+        $billShareTotal = $this->r2(collect($returnLines)->sum('bill_share'));
+        $grandTotal     = $this->r2(collect($returnLines)->sum('line_total'));
 
         if ($grandTotal <= 0) {
             $fail('items', 'The selected stock has no returnable value.');
@@ -229,7 +274,7 @@ final class DebitNoteService
         $this->removeBatchStock($returnLines, $store, $user, $dn, $snapshots);
 
         // 6. Journal: Dr AP / Cr Inventory (base) / Cr ITC (tax reversal).
-        $this->postJournal($dn, $store, $user, $po, $subtotal, $taxTotal, $grandTotal);
+        $this->postJournal($dn, $store, $user, $po, $subtotal, $taxTotal, $grandTotal, $billShareTotal);
 
         $this->summaries->record(
             SummaryDeltaFactory::forDebitNote(
@@ -334,12 +379,21 @@ final class DebitNoteService
     |--------------------------------------------------------------------------
     */
 
-    private function postJournal(DebitNote $dn, Store $store, User $user, PurchaseOrder $po, float $subtotal, float $taxTotal, float $grandTotal): void
+    private function postJournal(DebitNote $dn, Store $store, User $user, PurchaseOrder $po, float $subtotal, float $taxTotal, float $grandTotal, float $billShareTotal = 0.0): void
     {
         $lines = [
             ['account' => '2010', 'debit' => $grandTotal, 'memo' => 'Debit note ' . $dn->debit_note_number . ' — purchase return'],
-            ['account' => '1040', 'credit' => $subtotal, 'memo' => 'Inventory returned to vendor'],
         ];
+
+        // The returned goods carried a slice of the bill-level discount the
+        // purchase credited to 5015 — that slice was never owed to the
+        // supplier, so it comes back as a debit here instead of inflating
+        // the AP reversal.
+        if ($billShareTotal > 0) {
+            $lines[] = ['account' => '5015', 'debit' => $billShareTotal, 'memo' => 'Purchase discount reversed — ' . $dn->debit_note_number];
+        }
+
+        $lines[] = ['account' => '1040', 'credit' => $subtotal, 'memo' => 'Inventory returned to vendor'];
 
         if ($taxTotal > 0) {
             $lines[] = ['account' => '1050', 'credit' => $taxTotal, 'memo' => 'ITC reversal — purchase return'];

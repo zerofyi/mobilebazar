@@ -23,6 +23,7 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
     'amount',
     'txn_reference',
     'gateway',
+    'idempotency_key',
     'status',
     'paid_at',
     'created_by',
