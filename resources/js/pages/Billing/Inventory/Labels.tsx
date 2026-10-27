@@ -1,7 +1,7 @@
 import { Head, Link } from "@inertiajs/react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { createPortal, flushSync } from "react-dom";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
 import JsBarcode from "jsbarcode";
 import {
     AlertTriangle, AlignCenter, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowUp, Barcode, Bold, Check,
@@ -116,6 +116,7 @@ interface LabelSettings {
     rowGapMm: number;
     offsetXmm: number;
     offsetYmm: number;
+    pageTrimMm: number;
     align: Align;
     vAlign: VAlign;
     fontFamily: FontFamily;
@@ -153,6 +154,8 @@ interface ViewState {
     rowNumbers: boolean;
     showLayers: boolean;
     showData: boolean;
+    layersW: number;
+    dataW: number;
 }
 
 interface ManualLabel {
@@ -308,8 +311,9 @@ const DEFAULT_SETTINGS: LabelSettings = {
     rowGapMm: 0.6,
     offsetXmm: 0,
     offsetYmm: 0,
+    pageTrimMm: 0.2,
     align: "center",
-    vAlign: "top",
+    vAlign: "middle",
     fontFamily: "arial",
     borderStyle: "none",
     borderWidthMm: 0.25,
@@ -338,9 +342,11 @@ const DEFAULT_SETTINGS: LabelSettings = {
 
 const DEFAULT_VIEW: ViewState = {
     tab: "home", zoom: 1.5, rulers: true, edges: true, guides: false, rowNumbers: true, showLayers: true, showData: true,
+    layersW: 290, dataW: 460,
 };
 
 const KEY_SETTINGS = "mobilebazar.labelSettings.v3";
+const KEY_VFIX = "mobilebazar.labelSettings.v3.vfix";
 const KEY_V2 = "mobilebazar.labelSettings.v2";
 const KEY_V1 = "mobilebazar.labelSettings.v1";
 const KEY_VIEW = "mobilebazar.labelView.v1";
@@ -441,7 +447,16 @@ function normalize(raw: any): LabelSettings {
 function loadSettings(): LabelSettings {
     try {
         const v3 = window.localStorage.getItem(KEY_SETTINGS);
-        if (v3) return normalize(JSON.parse(v3));
+        if (v3) {
+            const parsed = normalize(JSON.parse(v3));
+            // One-time: earlier builds top-aligned content, which made barcode/price jump up and down
+            // between labels with a different number of lines. Centre it once; the user can change it again.
+            if (!window.localStorage.getItem(KEY_VFIX)) {
+                window.localStorage.setItem(KEY_VFIX, "1");
+                parsed.vAlign = "middle";
+            }
+            return parsed;
+        }
         const v2 = window.localStorage.getItem(KEY_V2);
         if (v2) return normalize(JSON.parse(v2));
         const v1 = window.localStorage.getItem(KEY_V1);
@@ -925,32 +940,66 @@ function Seg<T extends string>({ value, onChange, options, className }: {
     );
 }
 
+function ResizeHandle({ onDrag, onReset, title }: { onDrag: (dx: number) => void; onReset: () => void; title: string }) {
+    const onDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        let last = e.clientX;
+        const move = (ev: PointerEvent) => {
+            onDrag(ev.clientX - last);
+            last = ev.clientX;
+        };
+        const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+        };
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+    };
+    return (
+        <div
+            role="separator"
+            aria-orientation="vertical"
+            title={title}
+            onPointerDown={onDown}
+            onDoubleClick={onReset}
+            className="group relative z-20 w-px shrink-0 cursor-col-resize bg-border"
+        >
+            <span className="absolute inset-y-0 -left-1.5 -right-1.5 transition-colors group-hover:bg-primary/25 group-active:bg-primary/40" />
+        </div>
+    );
+}
+
 function StockRow({ active, copies, onToggle, onCopies, title, variant, sub, extra }: {
     active: boolean; copies: number | undefined; onToggle: (v: boolean) => void; onCopies: (n: number) => void;
     title: string; variant: string | null; sub: string; extra?: ReactNode;
 }) {
     return (
-        <div className={cn("flex items-start gap-2.5 rounded-lg px-2 py-[7px] transition-colors", active ? "bg-accent/60" : "hover:bg-accent/40")}>
-            <Checkbox className="mt-0.5" checked={active} onCheckedChange={(v) => onToggle(v === true)} />
+        <div className={cn("flex items-start gap-2.5 rounded-lg px-2 py-2 transition-colors", active ? "bg-accent/60" : "hover:bg-accent/40")}>
+            <Checkbox className="mt-0.5 shrink-0" checked={active} onCheckedChange={(v) => onToggle(v === true)} />
             <div className="min-w-0 flex-1">
-                <div className="break-words text-[13px] font-medium leading-snug">
+                <div className="whitespace-normal break-words text-[13px] font-medium leading-snug" title={variant ? `${title} — ${variant}` : title}>
                     {title}
                     {variant && <span className="font-normal text-muted-foreground"> — {variant}</span>}
                 </div>
-                <div className="truncate text-[11px] leading-snug text-muted-foreground">{sub}</div>
+                {sub && <div className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-muted-foreground">{sub}</div>}
+                {active && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Copies</span>
+                        <Input
+                            type="number" min={1} max={9999}
+                            className="h-7 w-16 shrink-0 px-1.5 text-center text-xs shadow-none"
+                            value={copies ?? 1}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => onCopies(Math.max(1, Number(e.target.value) || 1))}
+                        />
+                        {extra}
+                    </div>
+                )}
             </div>
-            {active && (
-                <>
-                    {extra}
-                    <Input
-                        type="number" min={1} max={9999}
-                        className="h-7 w-14 shrink-0 px-1.5 text-center text-xs shadow-none"
-                        value={copies ?? 1}
-                        onFocus={(e) => e.target.select()}
-                        onChange={(e) => onCopies(Math.max(1, Number(e.target.value) || 1))}
-                    />
-                </>
-            )}
         </div>
     );
 }
@@ -1031,6 +1080,12 @@ export default function InventoryLabels({ store, units, batches }: Props) {
 
     /* ── view state, templates, manual labels ── */
     const [v, setV] = useState<ViewState>(() => ({ ...DEFAULT_VIEW, ...loadJson<Partial<ViewState>>(KEY_VIEW, {}) }));
+    const resizeBy = useCallback((key: "layersW" | "dataW", delta: number) => {
+        setV((prev) => {
+            const [lo, hi] = key === "layersW" ? [230, 520] : [340, 820];
+            return { ...prev, [key]: Math.round(clamp(prev[key] + delta, lo, hi)) };
+        });
+    }, []);
     const patchView = useCallback((p: Partial<ViewState>) => setV((prev) => ({ ...prev, ...p })), []);
     const [userTpls, setUserTpls] = useState<UserTemplate[]>(() => loadJson<UserTemplate[]>(KEY_TEMPLATES, []));
     const [manual, setManual] = useState<ManualLabel[]>(() => loadJson<ManualLabel[]>(KEY_MANUAL, []));
@@ -1269,18 +1324,65 @@ export default function InventoryLabels({ store, units, batches }: Props) {
         setMForm({ title: "", sub: "", barcode: "", price: "", copies: 1 });
     };
 
-    /* ── printing: the print sheet only exists while printing ── */
-    const doPrint = useCallback(() => window.print(), []);
+    /* ── printing ──
+       The sheet is rendered off-screen, then copied into a hidden iframe that contains ONLY the labels
+       (exact @page size, zero margins, one fixed-height page per row). This isolates the output from the app
+       layout, which is what caused rows to drift up/down on the printer. */
+    const stageRef = useRef<HTMLDivElement>(null);
+    const doPrint = useCallback(() => {
+        if (totalLabels > 0) setPrinting(true);
+    }, [totalLabels]);
+
     useEffect(() => {
-        const before = () => flushSync(() => setPrinting(true));
-        const after = () => setPrinting(false);
-        window.addEventListener("beforeprint", before);
-        window.addEventListener("afterprint", after);
-        return () => {
-            window.removeEventListener("beforeprint", before);
-            window.removeEventListener("afterprint", after);
+        if (!printing) return;
+        const stage = stageRef.current;
+        const markup = stage?.innerHTML ?? "";
+        setPrinting(false);
+        if (!markup) return;
+
+        const W = sheetWidthMm;
+        const H = s.heightMm;
+        const pageH = Math.max(1, H - Math.max(0, s.pageTrimMm));
+        const css = `
+            @page { size: ${W}mm ${H}mm; margin: 0; }
+            *, *::before, *::after { box-sizing: border-box; }
+            html, body { margin: 0; padding: 0; background: #fff; width: ${W}mm; }
+            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .lbl-pg { width: ${W}mm; height: ${pageH}mm; overflow: hidden; position: relative; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
+            .lbl-pg:last-child { page-break-after: auto; break-after: auto; }
+        `;
+
+        const iframe = document.createElement("iframe");
+        iframe.setAttribute("aria-hidden", "true");
+        iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+        document.body.appendChild(iframe);
+        const win = iframe.contentWindow;
+        const doc = iframe.contentDocument;
+        if (!win || !doc) {
+            iframe.remove();
+            return;
+        }
+        let done = false;
+        const cleanup = () => {
+            if (done) return;
+            done = true;
+            window.setTimeout(() => iframe.remove(), 500);
         };
-    }, []);
+        doc.open();
+        doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>${css}</style></head><body>${markup}</body></html>`);
+        doc.close();
+        win.addEventListener("afterprint", cleanup);
+        const timer = window.setTimeout(() => {
+            try {
+                win.focus();
+                win.print();
+            } finally {
+                window.setTimeout(cleanup, 120000);
+            }
+        }, 250);
+        void timer; // not cleared on re-render: setPrinting(false) above re-runs this effect's cleanup
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [printing]);
 
     /* ── zoom, wheel & keyboard ── */
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -1361,17 +1463,10 @@ export default function InventoryLabels({ store, units, batches }: Props) {
     const screenRows: (LabelData | null)[][] = rows.length > 0 ? rows.slice(0, MAX_SCREEN_ROWS) : [Array.from({ length: s.columns }, () => sample)];
     const truncated = rows.length > MAX_SCREEN_ROWS;
 
-    const printCss = `
-        @page { size: ${sheetWidthMm}mm ${s.heightMm}mm; margin: 0; }
-        #label-print-root { display: none; }
-        @media print {
-            html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
-            body > #app { display: none !important; }
-            #label-print-root { display: block !important; }
-            #label-print-root, #label-print-root * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .label-p-row { page-break-after: always; break-after: page; break-inside: avoid; }
-            .label-p-row:last-child { page-break-after: auto; break-after: auto; }
-        }
+    // Radix ScrollArea wraps content in a display:table box that grows to the widest line, which clipped long
+    // product names instead of wrapping them. Force a normal block so text wraps inside the panel.
+    const screenCss = `
+        .ls-scroll [data-radix-scroll-area-viewport] > div { display: block !important; min-width: 0 !important; width: 100% !important; }
     `;
 
     /* ── ruler ── */
@@ -1857,6 +1952,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                                     <MiniNum label="Offset X mm" value={s.offsetXmm} min={-10} max={10} step={0.1} width="w-[64px]" onChange={(n) => set("offsetXmm", n)} />
                                     <MiniNum label="Offset Y mm" value={s.offsetYmm} min={-10} max={10} step={0.1} width="w-[64px]" onChange={(n) => set("offsetYmm", n)} />
                                 </div>
+                                <MiniNum label="Feed trim mm" value={s.pageTrimMm} min={0} max={2} step={0.05} width="w-[64px]" onChange={(n) => set("pageTrimMm", n)} />
                                 <RibbonSmallButton icon={<RotateCcw className="size-3.5" />} label="Zero offsets" onClick={() => update((p) => ({ ...p, offsetXmm: 0, offsetYmm: 0 }))} />
                             </div>
                         </RibbonGroup>
@@ -2013,7 +2109,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
     return (
         <>
             <Head title="Print Labels" />
-            <style>{printCss}</style>
+            <style>{screenCss}</style>
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => importSetup(e.target.files?.[0])} />
 
             <div className="flex min-h-0 max-h-[calc(100vh)] flex-1 flex-col overflow-hidden bg-background">
@@ -2071,7 +2167,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                 <div className="flex min-h-0 flex-1">
                     {/* Layers & properties */}
                     {v.showLayers && (
-                        <aside className="flex w-75 shrink-0 flex-col border-r bg-card">
+                        <aside style={{ width: v.layersW }} className="flex shrink-0 flex-col bg-card">
                             <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
                                 <Layers className="size-4 text-muted-foreground" />
                                 <h2 className="text-sm font-semibold tracking-tight">Layers</h2>
@@ -2110,8 +2206,11 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                                     );
                                 })}
                             </div>
-                            <ScrollArea className="min-h-0 flex-1">{propsPanel}</ScrollArea>
+                            <ScrollArea className="ls-scroll min-h-0 flex-1">{propsPanel}</ScrollArea>
                         </aside>
+                    )}
+                    {v.showLayers && (
+                        <ResizeHandle title="Drag to resize · double-click to reset" onDrag={(dx) => resizeBy("layersW", dx)} onReset={() => patchView({ layersW: DEFAULT_VIEW.layersW })} />
                     )}
 
                     {/* Canvas */}
@@ -2189,7 +2288,10 @@ export default function InventoryLabels({ store, units, batches }: Props) {
 
                     {/* Data panel */}
                     {v.showData && (
-                        <aside className="flex w-100 shrink-0 flex-col border-l bg-card">
+                        <ResizeHandle title="Drag to resize · double-click to reset" onDrag={(dx) => resizeBy("dataW", -dx)} onReset={() => patchView({ dataW: DEFAULT_VIEW.dataW })} />
+                    )}
+                    {v.showData && (
+                        <aside style={{ width: v.dataW }} className="flex shrink-0 flex-col bg-card">
                             <div className="shrink-0 border-b px-3.5 pb-3 pt-3">
                                 <div className="mb-2.5 flex items-center gap-2">
                                     <Database className="size-4 text-muted-foreground" />
@@ -2233,7 +2335,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                                 )}
                             </div>
 
-                            <ScrollArea className="min-h-0 flex-1">
+                            <ScrollArea className="ls-scroll min-h-0 flex-1">
                                 <div className="px-3.5 py-3">
                                     {dataTab === "units" && (
                                         <section>
@@ -2358,13 +2460,13 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                 </div>
             </div>
 
-            {/* Print-only sheet, mounted just for the duration of printing (see beforeprint/afterprint). */}
+            {/* Off-screen render of the print sheet; copied into a print iframe by the printing effect. */}
             {mounted && printing &&
                 createPortal(
-                    <div id="label-print-root" style={{ width: `${sheetWidthMm}mm` }}>
+                    <div ref={stageRef} aria-hidden="true" style={{ position: "fixed", left: "-100000px", top: 0, width: `${sheetWidthMm}mm`, pointerEvents: "none" }}>
                         {rows.map((row, ri) => (
-                            <div key={ri} className="label-p-row" style={rowStyle}>
-                                {renderCells(row, ri, false)}
+                            <div key={ri} className="lbl-pg">
+                                <div style={rowStyle}>{renderCells(row, ri, false)}</div>
                             </div>
                         ))}
                     </div>,
