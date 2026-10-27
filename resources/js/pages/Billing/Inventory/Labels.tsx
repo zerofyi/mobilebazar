@@ -36,6 +36,8 @@ interface LabelUnit {
     variant_name: string | null;
     sku: string | null;
     barcode: string | null;
+    attributes: { name: string; value: string }[];
+    specs: string | null;
     imei1: string | null;
     imei2: string | null;
     serial_number: string | null;
@@ -53,6 +55,8 @@ interface LabelBatch {
     variant_name: string | null;
     sku: string | null;
     barcode: string | null;
+    attributes: { name: string; value: string }[];
+    specs: string | null;
     batch_number: string | null;
     qty: number;
     warranty: string | null;
@@ -82,7 +86,7 @@ type SortMode = "queue" | "name" | "price" | "reverse";
 type DateFormat = "dmy" | "my" | "dmony";
 type Decimals = "auto" | "0" | "2";
 type ElementKey =
-    | "store" | "name" | "variant" | "sku" | "imei" | "batch" | "condition" | "warranty" | "date"
+    | "store" | "name" | "variant" | "specs" | "sku" | "imei" | "batch" | "condition" | "warranty" | "date"
     | "barcode" | "price" | "mrp" | "wholesale" | "custom1" | "custom2" | "divider";
 type StyleKey = Exclude<ElementKey, "divider">;
 type TextKey = Exclude<ElementKey, "barcode" | "divider">;
@@ -129,6 +133,7 @@ interface LabelSettings {
     templates: Record<TextKey, string>;
     elementStyles: Record<StyleKey, ElementStyle>;
     nameVariantSameLine: boolean;
+    nameSpecsSameLine: boolean;
     nameLines: 1 | 2 | 3;
     dateFormat: DateFormat;
     decimals: Decimals;
@@ -177,6 +182,7 @@ interface LabelData {
     key: string;
     name: string;
     variant: string | null;
+    specs: string | null;
     sku: string | null;
     imei: string | null;
     serial: string | null;
@@ -205,6 +211,7 @@ const ELEMENTS: { key: ElementKey; label: string; orderable: boolean }[] = [
     { key: "store", label: "Store name", orderable: true },
     { key: "name", label: "Product name", orderable: true },
     { key: "variant", label: "Variant", orderable: true },
+    { key: "specs", label: "RAM / Storage", orderable: true },
     { key: "sku", label: "SKU", orderable: true },
     { key: "imei", label: "IMEI / Serial", orderable: true },
     { key: "batch", label: "Batch number", orderable: true },
@@ -246,7 +253,7 @@ const CASE_CSS: Record<TextCase, CSSProperties["textTransform"]> = {
 };
 
 const TOKEN_LIST = [
-    "store", "name", "variant", "sku", "imei", "serial", "imei_serial", "imei_label", "batch", "condition",
+    "store", "name", "variant", "specs", "sku", "imei", "serial", "imei_serial", "imei_label", "batch", "condition",
     "warranty", "price", "mrp", "wholesale", "barcode", "date", "qty",
 ];
 
@@ -261,6 +268,7 @@ const DEFAULT_ELEMENT_STYLES: Record<StyleKey, ElementStyle> = {
     store: es(7, 700, "upper", { tracking: 4 }),
     name: es(9, 600),
     variant: es(7),
+    specs: es(7),
     sku: es(7),
     imei: es(7),
     batch: es(7),
@@ -279,6 +287,7 @@ const DEFAULT_TEMPLATES: Record<TextKey, string> = {
     store: "{store}",
     name: "{name}",
     variant: "{variant}",
+    specs: "{specs}",
     sku: "SKU: {sku}",
     imei: "{imei_label}: {imei_serial}",
     batch: "Batch: {batch}",
@@ -293,7 +302,7 @@ const DEFAULT_TEMPLATES: Record<TextKey, string> = {
 };
 
 const DEFAULT_VISIBLE: Record<ElementKey, boolean> = {
-    store: true, name: true, variant: true, sku: false, imei: true, batch: false, condition: false,
+    store: true, name: true, variant: true, specs: false, sku: false, imei: true, batch: false, condition: false,
     warranty: true, date: false, barcode: true, price: true, mrp: true, wholesale: false,
     custom1: false, custom2: false, divider: false,
 };
@@ -324,6 +333,7 @@ const DEFAULT_SETTINGS: LabelSettings = {
     templates: DEFAULT_TEMPLATES,
     elementStyles: DEFAULT_ELEMENT_STYLES,
     nameVariantSameLine: false,
+    nameSpecsSameLine: false,
     nameLines: 2,
     dateFormat: "dmy",
     decimals: "auto",
@@ -416,7 +426,7 @@ function normalize(raw: any): LabelSettings {
     if (raw.visible && typeof raw.visible === "object") Object.assign(visible, raw.visible);
     else for (const [flag, keys] of Object.entries(legacyShow)) if (typeof raw[flag] === "boolean") keys.forEach((k) => (visible[k] = raw[flag]));
 
-    const metaKeys: StyleKey[] = ["sku", "imei", "batch", "condition", "warranty", "date", "mrp", "wholesale", "custom1", "custom2"];
+    const metaKeys: StyleKey[] = ["sku", "imei", "batch", "condition", "warranty", "date", "mrp", "wholesale", "custom1", "custom2", "specs"];
     const styles = {} as Record<StyleKey, ElementStyle>;
     for (const k of STYLE_KEYS) {
         const fromRaw = raw.elementStyles?.[k] ?? (metaKeys.includes(k) ? raw.elementStyles?.meta : undefined);
@@ -518,6 +528,7 @@ function tokensOf(d: LabelData, s: LabelSettings, store: string, dateText: strin
         store,
         name: d.name,
         variant: d.variant,
+        specs: d.specs,
         sku: d.sku,
         imei: d.imei,
         serial: d.serial,
@@ -716,6 +727,7 @@ function LabelFace({ data, s, storeName, dateText, ui }: {
                 let text = fill(s.templates.name, tok);
                 if (!text) return null;
                 if (s.nameVariantSameLine && data.variant) text = `${text} — ${data.variant}`;
+                if (s.nameSpecsSameLine && data.specs) text = `${text} — ${data.specs}`;
                 return (
                     <div style={textCss("name", { display: "-webkit-box", WebkitLineClamp: s.nameLines, WebkitBoxOrient: "vertical", overflow: "hidden" })}>
                         {text}
@@ -724,6 +736,9 @@ function LabelFace({ data, s, storeName, dateText, ui }: {
             }
             case "variant":
                 if (s.nameVariantSameLine) return null;
+            // falls through
+            case "specs":
+                if (k === "specs" && s.nameSpecsSameLine) return null;
             // falls through
             default: {
                 const text = fill(s.templates[k as TextKey], tok);
@@ -1164,7 +1179,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
             out.push({
                 copies,
                 data: {
-                    key: `u${u.id}`, name: u.product_name, variant: u.variant_name, sku: u.sku, imei: u.imei1,
+                    key: `u${u.id}`, name: u.product_name, variant: u.variant_name, specs: u.specs, sku: u.sku, imei: u.imei1,
                     serial: u.serial_number, batch: null, condition: u.condition, warranty: u.warranty,
                     barcodeValue: barcodeOfUnit(u), price: priceOf(u), priceText: null, mrp: u.mrp,
                     wholesale: u.wholesale_price, qty: null,
@@ -1177,7 +1192,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
             out.push({
                 copies,
                 data: {
-                    key: `b${b.id}`, name: b.product_name, variant: b.variant_name, sku: b.sku, imei: null,
+                    key: `b${b.id}`, name: b.product_name, variant: b.variant_name, specs: b.specs, sku: b.sku, imei: null,
                     serial: null, batch: b.batch_number, condition: null, warranty: b.warranty,
                     barcodeValue: barcodeOfBatch(b), price: priceOf(b), priceText: null, mrp: b.mrp,
                     wholesale: b.wholesale_price, qty: b.qty,
@@ -1188,7 +1203,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
             out.push({
                 copies: Math.max(1, m.copies),
                 data: {
-                    key: `m${m.id}`, name: m.title, variant: m.sub || null, sku: null, imei: null, serial: null,
+                    key: `m${m.id}`, name: m.title, variant: m.sub || null, specs: null, sku: null, imei: null, serial: null,
                     batch: null, condition: null, warranty: null, barcodeValue: m.barcode, price: null,
                     priceText: m.price || null, mrp: null, wholesale: null, qty: null,
                 },
@@ -1229,7 +1244,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
     }, [labels, s.skip, s.columns]);
 
     const sample: LabelData = {
-        key: "sample", name: "Sample Product — 5G Smartphone", variant: "8 GB · 128 GB · Black", sku: "SKU-100245",
+        key: "sample", name: "Sample Product — 5G Smartphone", variant: "8 GB · 128 GB · Black", specs: "8 GB / 128 GB", sku: "SKU-100245",
         imei: "356789104512390", serial: null, batch: "B-2026-014", condition: "New", warranty: "6 months",
         barcodeValue: "8901234567890", price: 18999, priceText: null, mrp: 21999, wholesale: 17400, qty: 12,
     };
@@ -1801,6 +1816,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                                 </div>
                                 <div className="flex items-center gap-3">
                                     <RibbonSwitch label="Name + variant on one line" checked={s.nameVariantSameLine} onChange={(c) => set("nameVariantSameLine", c)} />
+                                    <RibbonSwitch label="Name + RAM / Storage on one line" checked={s.nameSpecsSameLine} onChange={(c) => set("nameSpecsSameLine", c)} />
                                 </div>
                             </div>
                         </RibbonGroup>

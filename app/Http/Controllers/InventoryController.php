@@ -191,7 +191,7 @@ class InventoryController extends Controller
         $variantCols = 'productVariant:id,product_id,variant_name,sku,barcode,mrp,selling_price';
 
         /** @var \Illuminate\Database\Eloquent\Collection<int, StockUnit> $unitModels */
-        $unitModels = StockUnit::with([$variantCols, 'productVariant.product:id,name,warranty_months'])
+        $unitModels = StockUnit::with([$variantCols, 'productVariant.product:id,name,warranty_months', 'productVariant.attributeValues:id,attribute_id,value', 'productVariant.attributeValues.attribute:id,name'])
             ->where('store_id', $store->id)
             ->whereIn('status', ['available', 'reserved'])
             ->orderBy('id')
@@ -203,6 +203,8 @@ class InventoryController extends Controller
                 'variant_name'    => $u->productVariant?->variant_name,
                 'sku'             => $u->productVariant?->sku,
                 'barcode'         => $u->productVariant?->barcode,
+                'attributes'      => $this->labelSpecsList($u->productVariant),
+                'specs'           => $this->labelSpecsText($u->productVariant),
                 'imei1'           => $u->imei1,
                 'imei2'           => $u->imei2,
                 'serial_number'   => $u->serial_number,
@@ -217,7 +219,7 @@ class InventoryController extends Controller
             ])->values();
 
         /** @var \Illuminate\Database\Eloquent\Collection<int, StockBatch> $batchModels */
-        $batchModels = StockBatch::with([$variantCols, 'productVariant.product:id,name'])
+        $batchModels = StockBatch::with([$variantCols, 'productVariant.product:id,name', 'productVariant.attributeValues:id,attribute_id,value', 'productVariant.attributeValues.attribute:id,name'])
             ->where('store_id', $store->id)
             ->where('remaining_qty', '>', 0)
             ->orderByDesc('remaining_qty')
@@ -229,6 +231,8 @@ class InventoryController extends Controller
                 'variant_name'    => $b->productVariant?->variant_name,
                 'sku'             => $b->productVariant?->sku,
                 'barcode'         => $b->productVariant?->barcode,
+                'attributes'      => $this->labelSpecsList($b->productVariant),
+                'specs'           => $this->labelSpecsText($b->productVariant),
                 'batch_number'    => $b->batch_number,
                 'qty'             => (int) $b->remaining_qty,
                 'warranty'        => $b->remaining_warranty,
@@ -244,6 +248,52 @@ class InventoryController extends Controller
             'units' => $units,
             'batches' => $batches,
         ]);
+    }
+
+    /**
+     * A variant's attribute values for labels — [{name, value}] ordered
+     * RAM first, then Storage/ROM, then the rest by attribute name, so the
+     * composed specs string reads "8 GB / 128 GB" on phones.
+     *
+     * @return array<int, array{name: string, value: string}>
+     */
+    private function labelSpecsList(?ProductVariant $variant): array
+    {
+        if ($variant === null) {
+            return [];
+        }
+
+        $rank = static function (string $name): int {
+            $n = strtolower($name);
+            if (str_contains($n, 'ram')) {
+                return 0;
+            }
+            if (str_contains($n, 'storage') || str_contains($n, 'rom') || str_contains($n, 'memory')) {
+                return 1;
+            }
+            return 999;
+        };
+
+        return $variant->attributeValues
+            ->map(fn ($av) => [
+                'name'  => (string) ($av->attribute?->name ?? ''),
+                'value' => (string) ($av->value ?? ''),
+            ])
+            ->filter(function ($x) use ($rank) {
+                // Keep only non-empty values that match RAM or Storage keywords
+                return $x['value'] !== '' && $rank($x['name']) !== 999;
+            })
+            ->sortBy(fn ($x) => $rank($x['name']))
+            ->values()
+            ->all();
+    }
+
+    /** The same values as one line: "8 GB / 128 GB" (null when none). */
+    private function labelSpecsText(?ProductVariant $variant): ?string
+    {
+        $list = $this->labelSpecsList($variant);
+
+        return $list === [] ? null : implode(' / ', array_column($list, 'value'));
     }
 
     /**
