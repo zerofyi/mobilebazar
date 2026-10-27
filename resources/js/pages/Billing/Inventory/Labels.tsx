@@ -1234,6 +1234,12 @@ export default function InventoryLabels({ store, units, batches }: Props) {
 
     const totalLabels = labels.length;
     const sheetWidthMm = s.columns * s.widthMm + (s.columns - 1) * s.gapMm + s.edgeMarginMm * 2;
+    // One height for the whole print pipeline — @page size, the .lbl-pg page
+    // box and the row inside it MUST be identical. Any mismatch (box shorter
+    // than the page, row taller than the box) makes Chrome re-fragment every
+    // page that has a forced break after it, shifting those rows down; only
+    // the last row (no break after) printed correctly.
+    const printPageH = Math.max(1, s.heightMm - Math.max(0, s.pageTrimMm));
 
     const rows = useMemo<(LabelData | null)[][]>(() => {
         if (labels.length === 0) return [];
@@ -1356,14 +1362,13 @@ export default function InventoryLabels({ store, units, batches }: Props) {
         if (!markup) return;
 
         const W = sheetWidthMm;
-        const H = s.heightMm;
-        const pageH = Math.max(1, H - Math.max(0, s.pageTrimMm));
+        const pageH = printPageH;
         const css = `
-            @page { size: ${W}mm ${H}mm; margin: 0; }
+            @page { size: ${W}mm ${pageH}mm; margin: 0; }
             *, *::before, *::after { box-sizing: border-box; }
             html, body { margin: 0; padding: 0; background: #fff; width: ${W}mm; }
             body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .lbl-pg { width: ${W}mm; height: ${pageH}mm; overflow: hidden; position: relative; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
+            .lbl-pg { width: ${W}mm; height: ${pageH}mm; margin: 0; overflow: hidden; position: relative; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
             .lbl-pg:last-child { page-break-after: auto; break-after: auto; }
         `;
 
@@ -2482,7 +2487,7 @@ export default function InventoryLabels({ store, units, batches }: Props) {
                     <div ref={stageRef} aria-hidden="true" style={{ position: "fixed", left: "-100000px", top: 0, width: `${sheetWidthMm}mm`, pointerEvents: "none" }}>
                         {rows.map((row, ri) => (
                             <div key={ri} className="lbl-pg">
-                                <div style={rowStyle}>{renderCells(row, ri, false)}</div>
+                                <div style={{ ...rowStyle, height: `${printPageH}mm` }}>{renderCells(row, ri, false)}</div>
                             </div>
                         ))}
                     </div>,
