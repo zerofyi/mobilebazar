@@ -41,7 +41,7 @@ class BuybackController extends Controller
                 'is_gst_registered' => (bool) $store->is_gst_registered,
                 'state_code'        => $store->gstin ? substr($store->gstin, 0, 2) : $store->address?->state_code,
             ],
-            'today' => now()->toDateString(),
+            'today' => $store->businessToday(),
         ]);
     }
 

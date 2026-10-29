@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { todayLocal } from "@/lib/local-date";
 import { Head, router } from "@inertiajs/react";
 import { ArrowLeft, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -43,7 +44,7 @@ export default function Create({
     const [selected, setSelected] = useState<Record<number, number>>({});
     const [reason, setReason] = useState("");
     const [refundMode, setRefundMode] = useState<"cash" | "adjust">("adjust");
-    const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+    const [date, setDate] = useState(todayLocal());
     const [notes, setNotes] = useState("");
     const [pinOpen, setPinOpen] = useState(false);
     const [pinError, setPinError] = useState<string | null>(null);

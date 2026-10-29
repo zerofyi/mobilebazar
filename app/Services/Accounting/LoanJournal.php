@@ -159,7 +159,7 @@ final class LoanJournal
         $this->accounting->post(new JournalEntryData(
             storeId:       $store->id,
             entryNumber:   'JE-LR-' . $repayment->receipt_number,
-            entryDate:     $repayment->paid_at ?? now(),
+            entryDate:     $store->businessToday(),
             referenceType: LoanRepayment::class,
             referenceId:   (int) $repayment->id,
             narration:     'EMI collection ' . $repayment->receipt_number,

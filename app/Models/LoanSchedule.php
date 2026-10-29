@@ -72,7 +72,9 @@ class LoanSchedule extends Model
     /** Past due date and not fully paid. */
     public function scopeOverdue($q)
     {
-        return $q->whereDate('due_date', '<', today())
+        // Business date, not app (UTC) today — stores run on Asia/Kolkata
+        // (stores.timezone default); a UTC scope flips overdue 5.5h late.
+        return $q->whereDate('due_date', '<', now('Asia/Kolkata')->toDateString())
             ->where('status', '!=', 'paid');
     }
 

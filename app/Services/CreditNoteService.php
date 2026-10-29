@@ -207,12 +207,14 @@ final class CreditNoteService
             : 1.0;
 
         // Already-returned qty per invoice item (from prior credit notes).
+        // Aliased SUM — pluck() reads the value off each row by property
+        // name; an unaliased aggregate has none (500 once a prior return exists).
         $returnedQty = DB::table('credit_note_items')
             ->join('credit_notes', 'credit_notes.id', '=', 'credit_note_items.credit_note_id')
             ->where('credit_notes.invoice_id', $invoice->id)
             ->where('credit_notes.status', 'issued')
             ->groupBy('credit_note_items.invoice_item_id')
-            ->pluck(DB::raw('SUM(credit_note_items.quantity)'), 'credit_note_items.invoice_item_id')
+            ->pluck(DB::raw('SUM(credit_note_items.quantity) as returned_qty'), 'credit_note_items.invoice_item_id')
             ->all();
 
         $lines = [];
@@ -239,6 +241,36 @@ final class CreditNoteService
                 throw ValidationException::withMessages([
                     "items.$idx" => "This unit is no longer marked sold (status: {$unit->status}) and cannot be returned.",
                 ]);
+            }
+
+            // Buyback guard (mirror of SaleService::assertSaleEditable):
+            // restoring this unit to 'available' must not create a duplicate
+            // active IMEI/serial — e.g. the same device was bought back and
+            // the new row is already in active stock. The DB unique indexes
+            // (uniq_active_imei1/2, uniq_active_serial) are global across
+            // stores, so this check is too; a clear 422 beats a 500 from
+            // the constraint.
+            if ($unit) {
+                $identifiers = array_filter([$unit->imei1, $unit->imei2, $unit->serial_number]);
+                if ($identifiers !== []) {
+                    $conflict = StockUnit::query()
+                        ->where('id', '!=', $unit->id)
+                        ->whereIn('status', ['available', 'reserved'])
+                        ->where(function ($q) use ($unit) {
+                            $q->when($unit->imei1, fn ($q2) => $q2->orWhere('imei1', $unit->imei1))
+                              ->when($unit->imei2, fn ($q2) => $q2->orWhere('imei2', $unit->imei2))
+                              ->when($unit->serial_number, fn ($q2) => $q2->orWhere('serial_number', $unit->serial_number));
+                        })
+                        ->exists();
+
+                    if ($conflict) {
+                        throw ValidationException::withMessages([
+                            "items.$idx" => 'This unit cannot be returned: another unit with IMEI/serial ' .
+                                ($unit->imei1 ?? $unit->serial_number ?? "#{$unit->id}") .
+                                ' is already in active stock (the device may have been bought back). Resolve the duplicate stock entry first.',
+                        ]);
+                    }
+                }
             }
 
             // Pro-rata refund from the posted line values, scaled by the
@@ -283,7 +315,17 @@ final class CreditNoteService
 
             if ($line['stock_unit']) {
                 $unit = StockUnit::where('store_id', $store->id)->lockForUpdate()->findOrFail($line['stock_unit']->id);
-                $unit->update(['status' => 'available']);
+                try {
+                    $unit->update(['status' => 'available']);
+                } catch (\Illuminate\Database\UniqueConstraintViolationException) {
+                    // Lost a race with a concurrent buyback/purchase of the
+                    // same IMEI between the validation check and this update.
+                    throw ValidationException::withMessages([
+                        'items' => 'This unit cannot be returned: another unit with IMEI/serial ' .
+                            ($unit->imei1 ?? $unit->serial_number ?? "#{$unit->id}") .
+                            ' is already in active stock (the device may have been bought back). Resolve the duplicate stock entry first.',
+                    ]);
+                }
                 StockUnitEvent::create([
                     'stock_unit_id'  => $unit->id,
                     'store_id'       => $store->id,

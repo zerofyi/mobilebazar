@@ -58,13 +58,15 @@ class CreditNoteController extends Controller
             ->where('uuid', $sale)
             ->firstOrFail();
 
-        // Already-returned qty per line.
+        // Already-returned qty per line. The SUM must carry an alias: pluck()
+        // reads the value back off each row by property name, and an unaliased
+        // aggregate has no such property (500 on invoices with a prior return).
         $returned = \DB::table('credit_note_items')
             ->join('credit_notes', 'credit_notes.id', '=', 'credit_note_items.credit_note_id')
             ->where('credit_notes.invoice_id', $invoice->id)
             ->where('credit_notes.status', 'issued')
             ->groupBy('credit_note_items.invoice_item_id')
-            ->pluck(\DB::raw('SUM(credit_note_items.quantity)'), 'credit_note_items.invoice_item_id')
+            ->pluck(\DB::raw('SUM(credit_note_items.quantity) as returned_qty'), 'credit_note_items.invoice_item_id')
             ->all();
 
         $lines = $invoice->items->map(fn ($item) => [

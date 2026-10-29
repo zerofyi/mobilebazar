@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useMemo, useReducer } from "react";
+import { todayLocal } from "@/lib/local-date";
 
 /*
  * Sale POS context — single source of truth for the sale screen.
@@ -390,7 +391,7 @@ export function initialSaleState(store: StoreInfo, initialInvoiceNumber: string)
         taxMovement: "intra",
         isGstBilled: store.is_gst_registered,
         invoiceNumber: initialInvoiceNumber,
-        invoiceDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
+        invoiceDate: todayLocal(),
         billDiscount: 0,
         shippingCharge: 0,
         autoRoundOff: true,

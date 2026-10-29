@@ -193,7 +193,7 @@ final class SaleJournal
         $this->accounting->post(new JournalEntryData(
             storeId: $store->id,
             entryNumber: 'JE-COLL-' . $invoice->invoice_number . '-' . now()->format('His') . '-' . Str::random(4),
-            entryDate: now()->toDateString(),
+            entryDate: $store->businessToday(),
             referenceType: Invoice::class,
             referenceId: $invoice->id,
             narration: $memo,

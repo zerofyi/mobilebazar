@@ -12,6 +12,7 @@ import {
     ReceiptText,
     ShoppingBag,
     ShoppingCart,
+    Smartphone,
     TrendingUp,
     Wallet,
 } from 'lucide-react';
@@ -21,22 +22,28 @@ import {
     Bar,
     BarChart,
     CartesianGrid,
-    Cell,
-    Legend,
+    Label,
     Pie,
     PieChart,
-    ResponsiveContainer,
-    Tooltip,
     XAxis,
     YAxis,
 } from 'recharts';
 import StatCard from '@/components/special/stat-card';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    ChartContainer,
+    ChartLegend,
+    ChartLegendContent,
+    ChartTooltip,
+    ChartTooltipContent,
+    type ChartConfig,
+} from '@/components/ui/chart';
 import {
     Table,
     TableBody,
     TableCell,
+    TableFooter,
     TableHead,
     TableHeader,
     TableRow,
@@ -68,6 +75,7 @@ interface DayRow {
 
 interface DashboardProps {
     store: { name: string; code: string };
+    business_date: string;
     today: DayRow;
     yesterday: DayRow;
     growth: { sales: number | null; invoices: number | null; profit: number | null };
@@ -133,7 +141,7 @@ function AlertCard({ alert }: { alert: { key: string; count: number; href: strin
     return (
         <a
             href={alert.href}
-            className="flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 transition-all hover:shadow-md hover:-translate-y-0.5"
+            className="flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 transition-all hover:-translate-y-0.5 hover:shadow-md"
         >
             <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-yellow-500/15">
                 <Icon className="size-4.5 text-yellow-600" />
@@ -148,40 +156,62 @@ function AlertCard({ alert }: { alert: { key: string; count: number; href: strin
     );
 }
 
-const MODE_COLORS: Record<string, string> = {
-    Cash: '#10b981',
-    UPI: '#3b82f6',
-    Card: '#f59e0b',
-    Bank: '#8b5cf6',
-    Buyback: '#f43f5e',
-};
+/* ── Dates ────────────────────────────────────────────────────────────────
+   All dates arrive as 'Y-m-d' business dates (store timezone). Parse by
+   parts — never `new Date(iso)`, which reads it as UTC midnight. */
+
+function parseISODate(iso?: string): Date | null {
+    if (!iso) return null;
+    const [y, m, d] = iso.split('-').map(Number);
+    return y && m && d ? new Date(y, m - 1, d) : null;
+}
 
 function shortDate(iso?: string): string {
-    if (!iso) return '—';
-    const [y, m, d] = iso.split('-').map(Number);
-    return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    const d = parseISODate(iso);
+    return d ? d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—';
 }
 
-function ChartTooltip({ active, payload, label }: any) {
-    if (!active || !payload?.length) return null;
-    return (
-        <div className="rounded-lg border border-border bg-background px-3 py-2 text-xs shadow-lg">
-            <p className="mb-1 font-semibold">{label}</p>
-            {payload.map((p: any) => (
-                <p key={p.dataKey ?? p.name} className="flex items-center gap-2">
-                    <span
-                        className="size-2 rounded-full"
-                        style={{ background: p.color ?? p.payload?.fill ?? p.fill }}
-                    />
-                    <span className="text-muted-foreground">{p.name}:</span>
-                    <span className="font-semibold">
-                        {typeof p.value === 'number' && p.dataKey !== 'invoices' ? inr.format(p.value) : p.value}
-                    </span>
-                </p>
-            ))}
-        </div>
-    );
+function dayLabel(iso?: string): string {
+    const d = parseISODate(iso);
+    return d
+        ? d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })
+        : '—';
 }
+
+function fullDate(iso?: string): string {
+    const d = parseISODate(iso);
+    return d
+        ? d.toLocaleDateString('en-IN', {
+              weekday: 'long',
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+          })
+        : '—';
+}
+
+/* ── Chart configs (shadcn chart theming) ─────────────────────────────── */
+
+const salesChartConfig = {
+    sales: { label: 'Sales', color: 'var(--chart-2)' },
+    purchases: { label: 'Purchases', color: 'var(--chart-1)' },
+} satisfies ChartConfig;
+
+const profitChartConfig = {
+    gross_profit: { label: 'Gross profit', color: 'var(--chart-1)' },
+    net_profit: { label: 'Net profit', color: 'var(--chart-2)' },
+} satisfies ChartConfig;
+
+const modesChartConfig = {
+    cash: { label: 'Cash', color: 'var(--chart-2)' },
+    upi: { label: 'UPI', color: 'var(--chart-1)' },
+    card: { label: 'Card', color: 'var(--chart-3)' },
+    bank: { label: 'Bank', color: 'var(--chart-4)' },
+    buyback: { label: 'Buyback', color: 'var(--chart-5)' },
+} satisfies ChartConfig;
+
+const inrTick = (v: number) => inrCompact.format(v);
+const inrTooltip = (value: unknown) => inr.format(Number(value ?? 0));
 
 const emptyDay: DayRow = {
     sales: 0, purchases: 0, gross_profit: 0, net_profit: 0, expenses: 0,
@@ -198,8 +228,8 @@ const emptyMonth: DashboardProps['month'] = {
 
 export default function Dashboard({
     store: storeInfo = { name: '', code: '' },
+    business_date: businessDate = '',
     today = emptyDay,
-    yesterday = emptyDay,
     growth = { sales: null, invoices: null, profit: null },
     month = emptyMonth,
     trend = [],
@@ -207,7 +237,23 @@ export default function Dashboard({
 }: Partial<DashboardProps>) {
     const trendData = trend.map((d) => ({ ...d, label: shortDate(d.date) }));
     const last7 = [...trend].slice(-7).reverse();
-    const modesTotal = month.modes.reduce((s, m) => s + m.value, 0);
+    const last7Totals = last7.reduce(
+        (acc, d) => ({
+            invoices: acc.invoices + d.invoices,
+            sales: acc.sales + d.sales,
+            purchases: acc.purchases + d.purchases,
+            gross_profit: acc.gross_profit + d.gross_profit,
+            net_profit: acc.net_profit + d.net_profit,
+        }),
+        { invoices: 0, sales: 0, purchases: 0, gross_profit: 0, net_profit: 0 },
+    );
+
+    const modesData = month.modes.map((m) => {
+        const slug = m.name.toLowerCase();
+        return { ...m, slug, fill: `var(--color-${slug})` };
+    });
+    const modesTotal = modesData.reduce((s, m) => s + m.value, 0);
+    const todayModesTotal = today.modes.reduce((s, m) => s + m.value, 0);
 
     return (
         <>
@@ -221,13 +267,7 @@ export default function Dashboard({
                             Dashboard
                         </h2>
                         <p className="mt-1 text-sm text-muted-foreground">
-                            {storeInfo.name} ({storeInfo.code}) ·{' '}
-                            {new Date().toLocaleDateString('en-IN', {
-                                weekday: 'short',
-                                day: 'numeric',
-                                month: 'short',
-                                year: 'numeric',
-                            })}
+                            {storeInfo.name} ({storeInfo.code}) · {fullDate(businessDate)}
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -241,7 +281,9 @@ export default function Dashboard({
 
                 {/* Today */}
                 <div>
-                    <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Today</h3>
+                    <h3 className="mb-2 text-sm font-semibold text-muted-foreground">
+                        Today · {shortDate(businessDate)}
+                    </h3>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                         <StatCard
                             title="Today's Sales"
@@ -281,6 +323,66 @@ export default function Dashboard({
                             href="/app/loan-installments/today"
                         />
                     </div>
+
+                    {/* Today's collections by mode */}
+                    <Card className="mt-3 shadow-sm">
+                        <CardHeader className="flex-row items-start justify-between gap-4 pb-3">
+                            <div>
+                                <CardTitle className="text-sm font-semibold">Collected Today</CardTitle>
+                                <CardDescription>Net collections by payment mode</CardDescription>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                                    Total collected
+                                </p>
+                                <p className="text-xl leading-tight font-bold tabular-nums">
+                                    {inr.format(todayModesTotal)}
+                                </p>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                {today.modes.map((m) => {
+                                    const meta = {
+                                        Cash: { icon: Banknote, color: 'var(--chart-2)' },
+                                        UPI: { icon: Smartphone, color: 'var(--chart-1)' },
+                                        Card: { icon: CreditCard, color: 'var(--chart-3)' },
+                                        Bank: { icon: Landmark, color: 'var(--chart-4)' },
+                                    }[m.name] ?? { icon: Wallet, color: 'var(--chart-5)' };
+                                    const ModeIcon = meta.icon;
+                                    const share = todayModesTotal > 0 ? (m.value / todayModesTotal) * 100 : 0;
+                                    return (
+                                        <div key={m.name} className="rounded-lg border bg-muted/20 p-3">
+                                            <div className="flex items-center justify-between">
+                                                <span
+                                                    className="flex size-8 items-center justify-center rounded-md"
+                                                    style={{
+                                                        color: meta.color,
+                                                        backgroundColor: `color-mix(in oklch, ${meta.color} 14%, transparent)`,
+                                                    }}
+                                                >
+                                                    <ModeIcon className="size-4" />
+                                                </span>
+                                                <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                                                    {share.toFixed(1)}%
+                                                </span>
+                                            </div>
+                                            <p className="mt-2.5 text-base leading-none font-bold tabular-nums">
+                                                {inr.format(m.value)}
+                                            </p>
+                                            <p className="mt-1 text-xs text-muted-foreground">{m.name}</p>
+                                            <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                                                <div
+                                                    className="h-full rounded-full transition-all"
+                                                    style={{ width: `${share}%`, backgroundColor: meta.color }}
+                                                />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </CardContent>
+                    </Card>
                 </div>
 
                 {/* This month */}
@@ -338,83 +440,144 @@ export default function Dashboard({
                     </div>
                 )}
 
-                {/* Charts */}
+                {/* Charts — row 1 */}
                 <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
                     <Card className="shadow-sm xl:col-span-2">
                         <CardHeader className="pb-2">
-                            <CardTitle className="text-base">Sales vs Purchases — last 30 days</CardTitle>
+                            <CardTitle className="text-base">Sales vs Purchases</CardTitle>
+                            <CardDescription>Daily totals, last 30 days</CardDescription>
                         </CardHeader>
-                        <CardContent className="h-72">
-                            <ResponsiveContainer width="100%" height="100%">
+                        <CardContent>
+                            <ChartContainer config={salesChartConfig} className="h-72 w-full">
                                 <AreaChart data={trendData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                                     <defs>
-                                        <linearGradient id="gSales" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
-                                            <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                                        <linearGradient id="fillSales" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="var(--color-sales)" stopOpacity={0.35} />
+                                            <stop offset="95%" stopColor="var(--color-sales)" stopOpacity={0} />
                                         </linearGradient>
-                                        <linearGradient id="gPurch" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
-                                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                        <linearGradient id="fillPurchases" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="var(--color-purchases)" stopOpacity={0.35} />
+                                            <stop offset="95%" stopColor="var(--color-purchases)" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                                    <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} minTickGap={24} />
-                                    <YAxis
-                                        tick={{ fontSize: 11 }}
+                                    <CartesianGrid vertical={false} />
+                                    <XAxis
+                                        dataKey="label"
                                         tickLine={false}
-                                        tickFormatter={(v: number) => inrCompact.format(v)}
+                                        axisLine={false}
+                                        tickMargin={8}
+                                        minTickGap={24}
+                                    />
+                                    <YAxis
+                                        tickLine={false}
+                                        axisLine={false}
+                                        tickFormatter={inrTick}
                                         width={64}
                                     />
-                                    <Tooltip content={<ChartTooltip />} />
-                                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                                    <ChartTooltip
+                                        cursor={false}
+                                        content={<ChartTooltipContent indicator="line" formatter={inrTooltip} />}
+                                    />
                                     <Area
-                                        type="monotone"
                                         dataKey="sales"
-                                        name="Sales"
-                                        stroke="#10b981"
-                                        fill="url(#gSales)"
+                                        type="monotone"
+                                        fill="url(#fillSales)"
+                                        fillOpacity={0.4}
+                                        stroke="var(--color-sales)"
                                         strokeWidth={2}
                                     />
                                     <Area
-                                        type="monotone"
                                         dataKey="purchases"
-                                        name="Purchases"
-                                        stroke="#3b82f6"
-                                        fill="url(#gPurch)"
+                                        type="monotone"
+                                        fill="url(#fillPurchases)"
+                                        fillOpacity={0.4}
+                                        stroke="var(--color-purchases)"
                                         strokeWidth={2}
                                     />
+                                    <ChartLegend content={<ChartLegendContent />} />
                                 </AreaChart>
-                            </ResponsiveContainer>
+                            </ChartContainer>
                         </CardContent>
                     </Card>
 
                     <Card className="shadow-sm">
                         <CardHeader className="pb-2">
-                            <CardTitle className="text-base">Collections by mode — {month.label}</CardTitle>
+                            <CardTitle className="text-base">Collections by Mode</CardTitle>
+                            <CardDescription>{month.label} — where the money came in</CardDescription>
                         </CardHeader>
-                        <CardContent className="h-72">
+                        <CardContent>
                             {modesTotal > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie
-                                            data={month.modes}
-                                            dataKey="value"
-                                            nameKey="name"
-                                            innerRadius={52}
-                                            outerRadius={84}
-                                            paddingAngle={2}
-                                            strokeWidth={0}
-                                        >
-                                            {month.modes.map((m) => (
-                                                <Cell key={m.name} fill={MODE_COLORS[m.name] ?? '#94a3b8'} />
+                                <>
+                                    <ChartContainer config={modesChartConfig} className="mx-auto h-52 w-full">
+                                        <PieChart>
+                                            <ChartTooltip
+                                                cursor={false}
+                                                content={<ChartTooltipContent hideLabel formatter={inrTooltip} />}
+                                            />
+                                            <Pie
+                                                data={modesData}
+                                                dataKey="value"
+                                                nameKey="name"
+                                                innerRadius={60}
+                                                outerRadius={88}
+                                                paddingAngle={2}
+                                                strokeWidth={0}
+                                            >
+                                                <Label
+                                                    content={({ viewBox }) => {
+                                                        if (viewBox && 'cx' in viewBox && 'cy' in viewBox) {
+                                                            return (
+                                                                <text
+                                                                    x={viewBox.cx}
+                                                                    y={viewBox.cy}
+                                                                    textAnchor="middle"
+                                                                    dominantBaseline="middle"
+                                                                >
+                                                                    <tspan
+                                                                        x={viewBox.cx}
+                                                                        y={viewBox.cy}
+                                                                        className="fill-foreground text-2xl font-bold"
+                                                                    >
+                                                                        {inrCompact.format(modesTotal)}
+                                                                    </tspan>
+                                                                    <tspan
+                                                                        x={viewBox.cx}
+                                                                        y={(viewBox.cy || 0) + 22}
+                                                                        className="fill-muted-foreground text-xs"
+                                                                    >
+                                                                        Collected
+                                                                    </tspan>
+                                                                </text>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }}
+                                                />
+                                            </Pie>
+                                        </PieChart>
+                                    </ChartContainer>
+                                    <ul className="mt-2 space-y-1.5 text-sm">
+                                        {modesData
+                                            .filter((m) => m.value > 0)
+                                            .map((m) => (
+                                                <li key={m.name} className="flex items-center gap-2">
+                                                    <span
+                                                        className="size-2.5 shrink-0 rounded-full"
+                                                        style={{ background: m.fill }}
+                                                    />
+                                                    <span className="text-muted-foreground">{m.name}</span>
+                                                    <span className="ml-auto font-semibold tabular-nums">
+                                                        {inr.format(m.value)}
+                                                    </span>
+                                                    <span className="w-12 text-right text-xs text-muted-foreground tabular-nums">
+                                                        {((m.value / modesTotal) * 100).toFixed(1)}%
+                                                    </span>
+                                                </li>
                                             ))}
-                                        </Pie>
-                                        <Tooltip content={<ChartTooltip />} />
-                                        <Legend wrapperStyle={{ fontSize: 12 }} />
-                                    </PieChart>
-                                </ResponsiveContainer>
+                                    </ul>
+                                </>
                             ) : (
-                                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                <div className="flex h-52 items-center justify-center text-sm text-muted-foreground">
                                     No collections recorded this month.
                                 </div>
                             )}
@@ -422,43 +585,56 @@ export default function Dashboard({
                     </Card>
                 </div>
 
+                {/* Charts — row 2 */}
                 <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
                     <Card className="shadow-sm xl:col-span-2">
                         <CardHeader className="pb-2">
-                            <CardTitle className="text-base">Profit trend — last 30 days</CardTitle>
+                            <CardTitle className="text-base">Profit Trend</CardTitle>
+                            <CardDescription>Gross vs net profit, last 30 days</CardDescription>
                         </CardHeader>
-                        <CardContent className="h-64">
-                            <ResponsiveContainer width="100%" height="100%">
+                        <CardContent>
+                            <ChartContainer config={profitChartConfig} className="h-64 w-full">
                                 <BarChart data={trendData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }} barGap={2}>
-                                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                                    <XAxis dataKey="label" tick={{ fontSize: 11 }} tickLine={false} minTickGap={24} />
-                                    <YAxis
-                                        tick={{ fontSize: 11 }}
+                                    <CartesianGrid vertical={false} />
+                                    <XAxis
+                                        dataKey="label"
                                         tickLine={false}
-                                        tickFormatter={(v: number) => inrCompact.format(v)}
+                                        axisLine={false}
+                                        tickMargin={8}
+                                        minTickGap={24}
+                                    />
+                                    <YAxis
+                                        tickLine={false}
+                                        axisLine={false}
+                                        tickFormatter={inrTick}
                                         width={64}
                                     />
-                                    <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} />
-                                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                                    <Bar dataKey="gross_profit" name="Gross profit" fill="#3b82f6" radius={[3, 3, 0, 0]} />
-                                    <Bar dataKey="net_profit" name="Net profit" fill="#10b981" radius={[3, 3, 0, 0]} />
+                                    <ChartTooltip
+                                        cursor={{ fill: 'var(--muted)', opacity: 0.4 }}
+                                        content={<ChartTooltipContent indicator="dashed" formatter={inrTooltip} />}
+                                    />
+                                    <Bar dataKey="gross_profit" fill="var(--color-gross_profit)" radius={[3, 3, 0, 0]} />
+                                    <Bar dataKey="net_profit" fill="var(--color-net_profit)" radius={[3, 3, 0, 0]} />
+                                    <ChartLegend content={<ChartLegendContent />} />
                                 </BarChart>
-                            </ResponsiveContainer>
+                            </ChartContainer>
                         </CardContent>
                     </Card>
 
                     <Card className="shadow-sm">
                         <CardHeader className="pb-2">
-                            <CardTitle className="text-base">Money snapshot</CardTitle>
+                            <CardTitle className="text-base">Money Snapshot</CardTitle>
+                            <CardDescription>{month.label}</CardDescription>
                         </CardHeader>
                         <CardContent>
                             <dl className="space-y-3 text-sm">
                                 {[
                                     { icon: Banknote, label: 'Closing stock value', value: month.closing_stock },
-                                    { icon: CreditCard, label: 'Tax collected (month)', value: month.tax_collected },
-                                    { icon: HandCoins, label: 'EMI collected (month)', value: month.emi_collected },
-                                    { icon: Landmark, label: 'Loans disbursed (month)', value: month.loan_given },
-                                    { icon: ReceiptText, label: 'Refunds (month)', value: month.refunds },
+                                    { icon: CreditCard, label: 'Tax collected', value: month.tax_collected },
+                                    { icon: HandCoins, label: 'EMI collected', value: month.emi_collected },
+                                    { icon: Landmark, label: 'Loans disbursed', value: month.loan_given },
+                                    { icon: ReceiptText, label: 'Refunds', value: month.refunds },
+                                    { icon: ShoppingBag, label: 'Discounts given', value: month.discounts },
                                 ].map(({ icon: Icon, label, value }) => (
                                     <div key={label} className="flex items-center justify-between gap-2">
                                         <span className="flex items-center gap-2 text-muted-foreground">
@@ -476,7 +652,8 @@ export default function Dashboard({
                 {/* Last 7 days */}
                 <Card className="shadow-sm">
                     <CardHeader className="pb-2">
-                        <CardTitle className="text-base">Last 7 days</CardTitle>
+                        <CardTitle className="text-base">Last 7 Days</CardTitle>
+                        <CardDescription>Every calendar day — quiet days included</CardDescription>
                     </CardHeader>
                     <CardContent className="px-0 sm:px-6">
                         <Table>
@@ -491,28 +668,45 @@ export default function Dashboard({
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {last7.length === 0 && (
-                                    <TableRow>
-                                        <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
-                                            No summary data yet.
-                                        </TableCell>
-                                    </TableRow>
-                                )}
-                                {last7.map((d) => (
-                                    <TableRow key={d.date ?? Math.random()}>
-                                        <TableCell className="font-medium">{shortDate(d.date)}</TableCell>
-                                        <TableCell className="text-right tabular-nums">{d.invoices}</TableCell>
-                                        <TableCell className="text-right tabular-nums">{inr.format(d.sales)}</TableCell>
-                                        <TableCell className="text-right tabular-nums">{inr.format(d.purchases)}</TableCell>
-                                        <TableCell className="text-right tabular-nums text-blue-600 dark:text-blue-400">
-                                            {inr.format(d.gross_profit)}
-                                        </TableCell>
-                                        <TableCell className="text-right tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
-                                            {inr.format(d.net_profit)}
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
+                                {last7.map((d) => {
+                                    const isToday = d.date === businessDate;
+                                    return (
+                                        <TableRow key={d.date} className={isToday ? 'bg-muted/50 font-medium' : undefined}>
+                                            <TableCell className="font-medium">
+                                                {dayLabel(d.date)}
+                                                {isToday && (
+                                                    <Badge variant="secondary" className="ml-2">
+                                                        Today
+                                                    </Badge>
+                                                )}
+                                            </TableCell>
+                                            <TableCell className="text-right tabular-nums">{d.invoices}</TableCell>
+                                            <TableCell className="text-right tabular-nums">{inr.format(d.sales)}</TableCell>
+                                            <TableCell className="text-right tabular-nums">
+                                                {inr.format(d.purchases)}
+                                            </TableCell>
+                                            <TableCell className="text-right tabular-nums text-blue-600 dark:text-blue-400">
+                                                {inr.format(d.gross_profit)}
+                                            </TableCell>
+                                            <TableCell className="text-right font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                                                {inr.format(d.net_profit)}
+                                            </TableCell>
+                                        </TableRow>
+                                    );
+                                })}
                             </TableBody>
+                            <TableFooter>
+                                <TableRow>
+                                    <TableCell>7-day total</TableCell>
+                                    <TableCell className="text-right tabular-nums">{last7Totals.invoices}</TableCell>
+                                    <TableCell className="text-right tabular-nums">{inr.format(last7Totals.sales)}</TableCell>
+                                    <TableCell className="text-right tabular-nums">
+                                        {inr.format(last7Totals.purchases)}
+                                    </TableCell>
+                                    <TableCell className="text-right tabular-nums">{inr.format(last7Totals.gross_profit)}</TableCell>
+                                    <TableCell className="text-right tabular-nums">{inr.format(last7Totals.net_profit)}</TableCell>
+                                </TableRow>
+                            </TableFooter>
                         </Table>
                     </CardContent>
                 </Card>

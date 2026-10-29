@@ -61,14 +61,14 @@ class InstallmentController extends Controller
         $store = $this->store($request);
 
         $schedules = $this->baseQuery($store)
-            ->whereDate('due_date', today())
+            ->whereDate('due_date', $store->businessToday())
             ->whereIn('status', ['pending', 'partial', 'overdue'])
             ->orderBy('due_date')
             ->get();
 
         return Inertia::render('LoanInstallments/Today', [
             'schedules' => $schedules,
-            'date'      => today()->toDateString(),
+            'date'      => $store->businessToday(),
         ]);
     }
 
@@ -90,7 +90,8 @@ class InstallmentController extends Controller
     {
         $store = $this->store($request);
 
-        $month = $request->date('month')?->startOfMonth() ?? today()->startOfMonth();
+        $month = $request->date('month')?->startOfMonth()
+            ?? now($store->timezone ?: 'Asia/Kolkata')->startOfMonth();
 
         $schedules = $this->baseQuery($store)
             ->whereBetween('due_date', [

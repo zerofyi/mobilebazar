@@ -104,7 +104,7 @@ class DebitNoteController extends Controller
 
         return Inertia::render('App/DebitNotes/Create', [
             'preselectedPurchase' => $preselected,
-            'defaultDate'         => now()->toDateString(),
+            'defaultDate'         => $store->businessToday(),
         ]);
     }
 

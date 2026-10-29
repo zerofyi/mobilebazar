@@ -139,6 +139,9 @@ final class SummaryDeltaFactory
             'total_tax_collected'        => $evaluated['tax_amount'] ?? 0,
             'total_discounts'            => $evaluated['discount_amount'] ?? 0,
             'gross_profit'               => ($evaluated['grand_total'] ?? 0) - ($evaluated['cogs_total'] ?? 0),
+            // No expense module posts yet, so net tracks gross; expenses
+            // will subtract here when that module lands.
+            'net_profit'                 => ($evaluated['grand_total'] ?? 0) - ($evaluated['cogs_total'] ?? 0),
             'invoice_count'              => 1,
             'invoice_items_count'        => $items,
         ], $paidBuckets));
@@ -216,6 +219,7 @@ final class SummaryDeltaFactory
             // subtracted the full refund from gross, wiping out the whole
             // margin and driving profit negative.
             'gross_profit'        => -($grand - $cogs),
+            'net_profit'          => -($grand - $cogs),
         ]);
     }
 

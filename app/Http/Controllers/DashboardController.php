@@ -27,10 +27,16 @@ class DashboardController extends Controller
         $store = $user->ownedStore;
         abort_if(! $store, 404);
 
-        $today      = today()->toDateString();
-        $yesterday  = today()->subDay()->toDateString();
-        $monthStart = today()->startOfMonth()->toDateString();
-        $trendStart = today()->subDays(29)->toDateString();
+        // Business dates live in the STORE's timezone (stores.timezone,
+        // default Asia/Kolkata) — summaries are keyed by those dates. The
+        // app runs in UTC, so today() here would still be YESTERDAY from
+        // midnight to 05:30 IST: Today cards, the month window and the
+        // trend all shifted a day. Anchor every boundary to store time.
+        $now        = now($store->timezone ?: 'Asia/Kolkata');
+        $today      = $now->toDateString();
+        $yesterday  = $now->copy()->subDay()->toDateString();
+        $monthStart = $now->copy()->startOfMonth()->toDateString();
+        $trendStart = $now->copy()->subDays(29)->toDateString();
 
         $kpiCols = [
             'date', 'total_sales', 'total_purchases', 'gross_profit', 'net_profit',
@@ -44,12 +50,25 @@ class DashboardController extends Controller
         $todayRow     = $this->dailyRow($store->id, $today);
         $yesterdayRow = $this->dailyRow($store->id, $yesterday);
 
-        $trend = DailySummary::query()
+        // Fill EVERY calendar day in the window. Days without a summary row
+        // are real zero days — omitting them made the 30-day chart skip
+        // dates and the "last 7 days" table show the last 7 ACTIVE days.
+        $trendByDate = DailySummary::query()
             ->where('store_id', $store->id)
             ->whereBetween('date', [$trendStart, $today])
             ->orderBy('date')
             ->get($kpiCols)
-            ->map(fn (DailySummary $r) => $this->rowPayload($r));
+            ->keyBy(fn (DailySummary $r) => $r->date->toDateString());
+
+        // NOTE: this app uses CarbonImmutable — addDay() returns a NEW
+        // instance, so advance by assignment inside a counted loop.
+        $trend = collect();
+        $d = $now->copy()->subDays(29);
+        for ($i = 0; $i < 30; $i++) {
+            $ds = $d->toDateString();
+            $trend->push($this->rowPayload($trendByDate->get($ds), $ds));
+            $d = $d->addDay();
+        }
 
         $monthAgg = DailySummary::query()
             ->where('store_id', $store->id)
@@ -59,13 +78,14 @@ class DashboardController extends Controller
 
         $monthRow = MonthlySummary::query()
             ->where('store_id', $store->id)
-            ->where('year_month', today()->format('Y-m'))
+            ->where('year_month', $now->format('Y-m'))
             ->first(['closing_stock_value', 'total_receivables', 'total_payables', 'is_locked']);
 
         return Inertia::render('dashboard', [
-            'store'     => ['name' => $store->name, 'code' => $store->code],
-            'today'     => $this->rowPayload($todayRow),
-            'yesterday' => $this->rowPayload($yesterdayRow),
+            'store'         => ['name' => $store->name, 'code' => $store->code],
+            'business_date' => $today,
+            'today'         => $this->rowPayload($todayRow, $today),
+            'yesterday'     => $this->rowPayload($yesterdayRow, $yesterday),
             'growth'    => [
                 'sales'    => $this->growth($todayRow?->total_sales, $yesterdayRow?->total_sales),
                 'invoices' => $this->growth($todayRow?->invoice_count, $yesterdayRow?->invoice_count),
@@ -96,10 +116,10 @@ class DashboardController extends Controller
                 'receivables'   => (float) ($monthRow->total_receivables ?? 0),
                 'payables'      => (float) ($monthRow->total_payables ?? 0),
                 'locked'        => (bool) ($monthRow->is_locked ?? false),
-                'label'         => today()->format('F Y'),
+                'label'         => $now->format('F Y'),
             ],
-            'trend' => $trend,
-            'alerts' => $this->alerts($store->id),
+            'trend'  => $trend,
+            'alerts' => $this->alerts($store->id, $today),
         ]);
     }
 
@@ -112,10 +132,10 @@ class DashboardController extends Controller
     }
 
     /** Null-safe numeric payload so the frontend never guards. */
-    private function rowPayload(?DailySummary $r): array
+    private function rowPayload(?DailySummary $r, ?string $date = null): array
     {
         return [
-            'date'          => $r?->date?->toDateString(),
+            'date'          => $r?->date?->toDateString() ?? $date,
             'sales'         => (float) ($r->total_sales ?? 0),
             'purchases'     => (float) ($r->total_purchases ?? 0),
             'gross_profit'  => (float) ($r->gross_profit ?? 0),
@@ -154,11 +174,14 @@ class DashboardController extends Controller
      * Actionable exceptions for the dashboard "Needs attention" feed.
      * Three indexed count queries — kept cheap on purpose.
      */
-    private function alerts(int $storeId): array
+    private function alerts(int $storeId, string $businessDate): array
     {
+        // Same condition as LoanSchedule::overdue(), but against the store's
+        // business date — the scope's today() is UTC and flips 5.5h late.
         $overdueEmis = LoanSchedule::query()
             ->whereHas('loan', fn ($q) => $q->where('store_id', $storeId))
-            ->overdue()
+            ->whereDate('due_date', '<', $businessDate)
+            ->where('status', '!=', 'paid')
             ->count();
 
         $unpaidInvoices = Invoice::query()

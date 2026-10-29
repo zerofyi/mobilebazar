@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { todayLocal } from "@/lib/local-date";
 import { Head, Link, router } from '@inertiajs/react';
 import { dashboard } from '@/routes';
 import app from '@/routes/app';
@@ -412,7 +413,7 @@ export default function Index({ purchases: purchaseList, filters, summary }: Pro
                                 ) : (
                                     purchaseList.data.map((item, index) => {
                                         const serialNumber = ((purchaseList?.from ?? 1)) + index;
-                                        const isOverdue = item.due_date && item.due_amount > 0 && new Date(item.due_date) < new Date();
+                                        const isOverdue = item.due_date && item.due_amount > 0 && item.due_date < todayLocal();
 
                                         return (
                                             <TableRow

@@ -258,7 +258,7 @@ class Loan extends Model
         // Paise-exact close check: paid within a paise of the total.
         if ((int) round($paid * 100) >= (int) round($total * 100)) {
             $this->status      = self::STATUS_CLOSED;
-            $this->closed_date = today()->toDateString();
+            $this->closed_date = $this->store?->businessToday() ?? now('Asia/Kolkata')->toDateString();
         }
 
         $this->save();

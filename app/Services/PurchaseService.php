@@ -1556,13 +1556,13 @@ final class PurchaseService
     */
     public function indexStats(int $storeId): array
     {
-        $now = now();
+        $today = Store::find($storeId)?->businessToday() ?? now('Asia/Kolkata')->toDateString();
 
         return [
             'total_count'     => PurchaseOrder::where('store_id', $storeId)->count(),
             'total_spend'     => PurchaseOrder::where('store_id', $storeId)->sum('grand_total'),
             'total_due'       => PurchaseOrder::where('store_id', $storeId)->sum('due_amount'),
-            'overdue_due'     => PurchaseOrder::where('store_id', $storeId)->where('due_amount', '>', 0)->where('due_date', '<', $now)->sum('due_amount'),
+            'overdue_due'     => PurchaseOrder::where('store_id', $storeId)->where('due_amount', '>', 0)->whereDate('due_date', '<', $today)->sum('due_amount'),
             'itc_claimable'   => PurchaseOrder::where('store_id', $storeId)->where('is_gst_billed', true)->sum('tax_amount'),
         ];
     }

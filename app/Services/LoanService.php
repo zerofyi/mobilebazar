@@ -261,7 +261,7 @@ final class LoanService
                 ? 'paid'
                 : 'partial';
             if ($schedule->status === 'paid') {
-                $schedule->paid_date = today()->toDateString();
+                $schedule->paid_date = $store->businessToday();
             }
             $schedule->save();
 
@@ -269,7 +269,7 @@ final class LoanService
 
             $this->journal->postRepayment($repayment, $loan, $store, $user);
             $this->summaries->record(SummaryDeltaFactory::forLoanRepayment(
-                $store->id, today()->toDateString(),
+                $store->id, $store->businessToday(),
                 $data['payment_mode'], $amount,
             ));
 
@@ -325,20 +325,20 @@ final class LoanService
             foreach ($schedules as $s) {
                 $s->paid_amount = $s->total_due;
                 $s->status      = 'paid';
-                $s->paid_date   = today()->toDateString();
+                $s->paid_date   = $store->businessToday();
                 $s->save();
             }
 
             $loan->paid_amount    = $loan->total_payable;
             $loan->balance_amount = 0.00;
             $loan->status         = Loan::STATUS_CLOSED;
-            $loan->closed_date    = today()->toDateString();
+            $loan->closed_date    = $store->businessToday();
             $loan->settled_at     = now();
             $loan->save();
 
             $this->journal->postRepayment($repayment, $loan, $store, $user);
             $this->summaries->record(SummaryDeltaFactory::forLoanRepayment(
-                $store->id, today()->toDateString(), $paymentMode, $outstanding,
+                $store->id, $store->businessToday(), $paymentMode, $outstanding,
             ));
 
             return $repayment;

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useMemo, useReducer } from "react";
+import { todayLocal } from "@/lib/local-date";
 
 export type PartyType = "customer" | "supplier";
 export type BillType = "pv" | "po";
@@ -133,7 +134,7 @@ export function PurchaseProvider({ children, store, deviceConditions, initialPoN
         storeGstBillToggle: store.is_gst_registered,
         partyType: "customer", selectedParty: null, taxMovement: "intra",
         poNumber: initialPoNumber, vendorInvoiceNo: "",
-        orderDate: new Date().toISOString().slice(0, 10),
+        orderDate: todayLocal(),
         columnVisibility: defaultColumnVisibility(store.is_iws_allowed, store.is_gst_registered),
         // Start with one blank row so the user can type/scan immediately.
         // The edit page replaces this via SET_ROWS during hydration.

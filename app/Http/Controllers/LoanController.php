@@ -66,7 +66,10 @@ class LoanController extends Controller
                 'overdue_count'   => Loan::where('store_id', $store->id)->active()
                     ->whereHas('schedules', fn ($q) => $q->overdue())->count(),
                 'collected_today' => (float) LoanRepayment::where('store_id', $store->id)
-                    ->whereDate('paid_at', today())->sum('amount'),
+                    ->whereBetween('paid_at', [
+                        \Illuminate\Support\Carbon::parse($store->businessToday(), $store->timezone ?: 'Asia/Kolkata')->startOfDay()->utc(),
+                        \Illuminate\Support\Carbon::parse($store->businessToday(), $store->timezone ?: 'Asia/Kolkata')->endOfDay()->utc(),
+                    ])->sum('amount'),
             ],
         ]);
     }
@@ -281,7 +284,7 @@ class LoanController extends Controller
             'tenure_months'    => max(1, (int) $request->input('tenure_months', 1)),
             'processing_fee'   => $request->input('processing_fee'),
             'file_charge_mode' => $request->input('file_charge_mode', 'upfront'),
-            'disbursed_date'   => $request->input('disbursed_date', today()->toDateString()),
+            'disbursed_date'   => $request->input('disbursed_date', $store->businessToday()),
             'first_emi_date'   => $request->input('first_emi_date'),
             'collection_slab'  => $request->input('collection_slab'),
         ]);

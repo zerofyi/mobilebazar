@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { todayLocal } from "@/lib/local-date";
 import { Head, Link, router } from '@inertiajs/react';
 import { dashboard } from '@/routes';
 import app from '@/routes/app';
@@ -199,7 +200,7 @@ export default function Show({ purchase }: Props) {
     const [deleteOpen, setDeleteOpen] = useState(false);
     const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-    const isOverdue = purchase.due_date && purchase.due_amount > 0 && new Date(purchase.due_date) < new Date();
+    const isOverdue = purchase.due_date && purchase.due_amount > 0 && purchase.due_date < todayLocal();
     const paidPct = purchase.grand_total > 0
         ? Math.min(100, Math.max(0, (purchase.paid_amount / purchase.grand_total) * 100))
         : 0;

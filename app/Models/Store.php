@@ -138,6 +138,30 @@ class Store extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | Business dates
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Today's date in the STORE's timezone. Business/document dates
+     * (invoice dates, payment dates, summary buckets, journal entry dates)
+     * must come from here — the app itself runs in UTC, so a bare today()
+     * is still yesterday between midnight and 05:30 IST, which stamped
+     * early-morning purchases, collections and reports with the wrong day.
+     */
+    public function businessToday(): string
+    {
+        return now($this->timezone ?: 'Asia/Kolkata')->toDateString();
+    }
+
+    /** Current business month ('Y-m') in the store's timezone. */
+    public function businessMonth(): string
+    {
+        return substr($this->businessToday(), 0, 7);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Query Scopes
     |--------------------------------------------------------------------------
     */

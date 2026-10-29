@@ -18,6 +18,12 @@ class StoreSupplierPaymentRequest extends FormRequest
 
     public function rules(): array
     {
+        // 'today' in a date rule resolves in the APP timezone (UTC) — before
+        // 05:30 IST a payment dated today (store time) was rejected as being
+        // in the future. Validate against the store's business date.
+        $businessToday = $this->user()?->ownedStore?->businessToday()
+            ?? now('Asia/Kolkata')->toDateString();
+
         return [
             // ── Target POs (v1): one of these must identify the purchase(s) ───
             'purchase_order_id'  => ['nullable', 'uuid', 'required_without:purchase_order_ids'],
@@ -32,7 +38,7 @@ class StoreSupplierPaymentRequest extends FormRequest
             // ── Money ─────────────────────────────────────────────────────────
             'amount'       => ['required', 'numeric', 'min:0.01'],
             'payment_mode' => ['required', Rule::in(['cash', 'bank', 'upi', 'card', 'neft', 'rtgs', 'imps', 'cheque'])],
-            'paid_at'      => ['required', 'date', 'before_or_equal:today'],
+            'paid_at'      => ['required', 'date', 'before_or_equal:' . $businessToday],
 
             'txn_reference' => ['nullable', 'string', 'max:100'],
             'notes'         => ['nullable', 'string', 'max:1000'],

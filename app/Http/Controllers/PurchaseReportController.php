@@ -43,8 +43,9 @@ class PurchaseReportController extends Controller
             'export'      => ['nullable', Rule::in(['csv'])],
         ]);
 
-        $from = $validated['from'] ?? now()->startOfMonth()->toDateString();
-        $to   = $validated['to'] ?? now()->toDateString();
+        $businessNow = now($store->timezone ?: 'Asia/Kolkata');
+        $from = $validated['from'] ?? $businessNow->copy()->startOfMonth()->toDateString();
+        $to   = $validated['to'] ?? $businessNow->toDateString();
 
         $query = $this->registerQuery($store, $from, $to, $validated['supplier_id'] ?? null, $validated['bill_type'] ?? null);
 
@@ -185,7 +186,7 @@ class PurchaseReportController extends Controller
             'export' => ['nullable', Rule::in(['csv'])],
         ]);
 
-        $today = now()->toDateString();
+        $today = $store->businessToday();
 
         $base = PurchaseOrder::query()
             ->forStore($store->id)

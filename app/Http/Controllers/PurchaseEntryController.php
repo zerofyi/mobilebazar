@@ -56,7 +56,7 @@ class PurchaseEntryController extends Controller
             'total_count'   => $purchases->total(),
             'total_spend'   => (float) PurchaseOrder::where('store_id', $store->id)->sum('grand_total'),
             'total_due'     => (float) PurchaseOrder::where('store_id', $store->id)->sum('due_amount'),
-            'overdue_due'   => (float) PurchaseOrder::where('store_id', $store->id)->where('due_amount', '>', 0)->where('due_date', '<', now())->sum('due_amount'),
+            'overdue_due'   => (float) PurchaseOrder::where('store_id', $store->id)->where('due_amount', '>', 0)->whereDate('due_date', '<', $store->businessToday())->sum('due_amount'),
             'itc_claimable' => (float) PurchaseOrder::where('store_id', $store->id)->where('is_gst_billed', true)->sum('tax_amount'),
         ];
 

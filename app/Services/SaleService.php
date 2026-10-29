@@ -602,11 +602,13 @@ final class SaleService
             // Buyback guard: restoring this unit to 'available' must not create
             // a duplicate active IMEI/serial (the unit was bought back and the
             // new row is in active stock). The DB unique constraint would catch
-            // this, but a clear 422 beats a constraint violation.
+            // this, but a clear 422 beats a constraint violation. The DB
+            // indexes are global (no store component), so this check is too —
+            // a same-store-only check would still let a cross-store duplicate
+            // through to a 500.
             $identifiers = array_filter([$unit->imei1, $unit->imei2, $unit->serial_number]);
             if ($identifiers !== []) {
-                $conflict = StockUnit::where('store_id', $store->id)
-                    ->where('id', '!=', $unit->id)
+                $conflict = StockUnit::where('id', '!=', $unit->id)
                     ->whereIn('status', ['available', 'reserved'])
                     ->where(function ($q) use ($unit) {
                         $q->when($unit->imei1, fn ($q2) => $q2->orWhere('imei1', $unit->imei1))
@@ -666,8 +668,9 @@ final class SaleService
                 throw ValidationException::withMessages(['amount' => 'Collection cannot exceed the due amount of ' . number_format($due, 2) . '.']);
             }
 
-            if ($this->summaries->isMonthLocked($store->id, now()->format('Y-m'))) {
-                throw MonthLockedException::for($store->id, now()->format('Y-m'));
+            $businessMonth = $store->businessMonth();
+            if ($this->summaries->isMonthLocked($store->id, $businessMonth)) {
+                throw MonthLockedException::for($store->id, $businessMonth);
             }
 
             $mode = strtolower((string) ($payment['mode'] ?? 'cash'));
@@ -702,7 +705,7 @@ final class SaleService
             ]);
 
             $this->journal->postCollection($invoice, $store, $user, $mode, $amount, $reference);
-            $this->summaries->record(SummaryDeltaFactory::forCollection($store->id, now()->toDateString(), $mode, $amount));
+            $this->summaries->record(SummaryDeltaFactory::forCollection($store->id, $store->businessToday(), $mode, $amount));
 
             Log::info('Sale collection recorded', [
                 'store_id' => $store->id, 'invoice_id' => $invoice->id,

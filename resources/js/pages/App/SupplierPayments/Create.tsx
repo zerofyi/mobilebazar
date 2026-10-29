@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { todayLocal } from "@/lib/local-date";
 import { Head, Link, router } from "@inertiajs/react";
 import { dashboard } from "@/routes";
 import {
@@ -87,7 +88,7 @@ export default function SupplierPaymentCreate({ outstandingPos, preloaded, prese
     const [totalAmount, setTotalAmount] = useState("");
     const [manualAmounts, setManualAmounts] = useState<Record<string, string>>({});
     const [paymentMode, setPaymentMode] = useState<string>("bank");
-    const [paidAt, setPaidAt] = useState(() => new Date().toISOString().slice(0, 10));
+    const [paidAt, setPaidAt] = useState(() => todayLocal());
     const [txnReference, setTxnReference] = useState("");
     const [notes, setNotes] = useState("");
     const [submitting, setSubmitting] = useState(false);
@@ -276,7 +277,7 @@ export default function SupplierPaymentCreate({ outstandingPos, preloaded, prese
                                             <div className="min-w-0 flex-1">
                                                 <div className="flex items-center gap-2">
                                                     <span className="font-medium">{po.po_number}</span>
-                                                    {po.due_date && new Date(po.due_date) < new Date(new Date().toDateString()) && (
+                                                    {po.due_date && po.due_date < todayLocal() && (
                                                         <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
                                                             Overdue
                                                         </span>
@@ -375,7 +376,7 @@ export default function SupplierPaymentCreate({ outstandingPos, preloaded, prese
                                         id="paid_at"
                                         type="date"
                                         value={paidAt}
-                                        max={new Date().toISOString().slice(0, 10)}
+                                        max={todayLocal()}
                                         onChange={(e) => setPaidAt(e.target.value)}
                                     />
                                 </div>

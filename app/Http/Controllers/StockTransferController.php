@@ -98,7 +98,7 @@ class StockTransferController extends Controller
             ],
             'attachedSuppliers'   => $attachedSuppliers,
             'initialInvoiceNumber' => $this->sales->previewInvoiceNumber($store->id),
-            'today'               => now()->toDateString(),
+            'today'               => $store->businessToday(),
         ]);
     }
 

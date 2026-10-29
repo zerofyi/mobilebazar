@@ -166,7 +166,7 @@ final class BuybackService
             'type'            => 'direct',
             'is_gst_billed'   => $isGstBilled,
             'is_intra_state'  => true,
-            'order_date'      => $saleData['invoice_date'] ?? now()->toDateString(),
+            'order_date'      => $saleData['invoice_date'] ?? $store->businessToday(),
             'is_draft'        => false,
             'vendor_invoice_no' => null,
             'notes'           => 'Buyback — ' . ($buybackData['notes'] ?? ''),

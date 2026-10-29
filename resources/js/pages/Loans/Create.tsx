@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { localDateISO } from "@/lib/local-date";
 import { Head, useForm } from '@inertiajs/react';
 import { format } from 'date-fns';
 
@@ -197,9 +198,7 @@ const TENURE_PRESETS = ['3', '6', '9', '12'];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function toLocalISODate(date: Date): string {
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
+const toLocalISODate = localDateISO;
 
 function parseLocalDate(iso: string): Date {
     const [y, m, d] = iso.split('-').map(Number);
@@ -455,7 +454,7 @@ export default function Create({ invoice, defaults, financers = [] }: Props) {
         setLookupError(null);
         try {
             const res = await fetch(
-                `${app.loans['invoice-lookup'].url()}?q=${encodeURIComponent(q)}`,
+                `${app.loans.invoiceLookup.url()}?q=${encodeURIComponent(q)}`,
                 {
                     headers: {
                         Accept: 'application/json',
@@ -496,7 +495,7 @@ export default function Create({ invoice, defaults, financers = [] }: Props) {
 
         setIsCalculating(true);
         try {
-            const res = await fetch(app.loans['preview-schedule'].url(), {
+            const res = await fetch(app.loans.previewSchedule.url(), {
                 method: 'POST',
                 headers: {
                     Accept: 'application/json',

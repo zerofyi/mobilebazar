@@ -143,7 +143,7 @@ class SupplierPaymentController extends Controller
             ->orderBy('order_date')
             ->get();
 
-        $today = today()->toDateString();
+        $today = $store->businessToday();
 
         $overdue = $pos->filter(fn (PurchaseOrder $po) =>
             (float) $po->due_amount > 0 && $po->due_date && $po->due_date->toDateString() < $today)->values();
