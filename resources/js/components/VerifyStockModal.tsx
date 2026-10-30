@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Cpu, Layers, Package, Eye, Loader2 } from "lucide-react";
+import { Cpu, Layers, Package, Eye, Loader2, Building2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface VerifyResult {
@@ -16,6 +16,8 @@ export interface VerifyResult {
     identifier: string;
     status: string;
     meta: string;
+    store?: string | null;
+    own_store?: boolean;
 }
 
 interface VerifyResponse {
@@ -108,7 +110,7 @@ export default function VerifyStockModal({
             <Command shouldFilter={false}>
                 <div className="relative">
                     <CommandInput
-                        placeholder="Verify stock — type IMEI, serial, batch no, name, SKU…"
+                        placeholder="Verify stock across all stores — IMEI, serial, batch no, name, SKU…"
                         value={query}
                         onValueChange={setQuery}
                     />
@@ -144,6 +146,16 @@ export default function VerifyStockModal({
                                             {r.identifier}
                                             {r.meta && <span className="ml-1.5 font-sans">· {r.meta}</span>}
                                         </div>
+                                        {r.store && (
+                                            <div className={cn(
+                                                "mt-0.5 flex items-center gap-1 truncate text-[10px]",
+                                                r.own_store === false ? "font-medium text-primary" : "text-muted-foreground",
+                                            )}>
+                                                <Building2 className="size-3 shrink-0" />
+                                                {r.store}
+                                                {r.own_store === false && <span className="font-sans">· other store</span>}
+                                            </div>
+                                        )}
                                     </div>
                                     {r.status !== "—" && (
                                         <Badge variant="outline" className={cn("shrink-0 text-[10px] capitalize", statusTone(r.status))}>
