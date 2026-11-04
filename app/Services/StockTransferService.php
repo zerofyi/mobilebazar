@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Models\CreditNote;
+use App\Models\DebitNote;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\JournalEntry;
+use App\Models\Payment;
 use App\Models\PurchaseOrder;
 use App\Models\StockTransfer;
 use App\Models\StockUnit;
 use App\Models\Store;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Services\Summary\SummaryDeltaFactory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -59,6 +64,8 @@ final class StockTransferService
         private readonly SaleService $sales,
         private readonly PurchaseService $purchases,
         private readonly SupplierPaymentService $supplierPayments,
+        private readonly AccountingService $accounting,
+        private readonly SummaryService $summaries,
     ) {}
 
     /**
@@ -136,6 +143,403 @@ final class StockTransferService
 
             return $transfer->load(['saleInvoice', 'purchaseOrder']);
         });
+    }
+
+    /**
+     * Edit a posted transfer — re-price lines and/or take items back —
+     * by re-posting BOTH halves inside one transaction: the sale through
+     * SaleService::updateSale (source store) and the purchase through
+     * PurchaseService::updatePurchase (target store), rebuilt from the
+     * newly posted invoice exactly like transfer() builds it. A removed
+     * item simply leaves both payloads: its source unit stays 'available'
+     * (taken back) and its target row is deleted by the purchase edit.
+     *
+     * The one mechanical hazard is the global active-IMEI unique index:
+     * reversing the sale restores the source units to 'available', but
+     * their target-store twins are 'available' too, with the same IMEIs.
+     * So before the sale edit, every target unit is PARKED (status flipped
+     * to 'sold', which removes it from the active indexes) and its id is
+     * handed to the purchase edit as editable-despite-status. The park is
+     * invisible outside this transaction and rolls back with it.
+     *
+     * Settlement is re-mirrored, not patched: the original mirrored
+     * supplier payments are voided (journals reversed, rows kept as
+     * 'voided' so payment journal numbering never collides) and the edited
+     * sale's splits are replayed fresh.
+     *
+     * Hard gates (all 422, nothing changes): a credit note on the sale or
+     * a debit note on the purchase makes the transfer final; any target
+     * stock that has been sold or moved onward in the target store blocks
+     * the edit for the whole transfer; new items cannot be added (create a
+     * new transfer) and bulk quantities cannot exceed what was transferred.
+     *
+     * @param array $saleData validated sale payload (UpdateStockTransferRequest
+     *                        shape) for the edited sale.
+     */
+    public function updateTransfer(Store $sourceStore, User $user, StockTransfer $transfer, array $saleData): StockTransfer
+    {
+        $key = (string) ($saleData['idempotency_key'] ?? '');
+
+        return DB::transaction(function () use ($sourceStore, $user, $transfer, $saleData, $key) {
+            $transfer = StockTransfer::where('id', $transfer->id)->lockForUpdate()->firstOrFail();
+            $invoice = Invoice::where('id', $transfer->sale_invoice_id)->lockForUpdate()->firstOrFail();
+            $purchase = PurchaseOrder::where('id', $transfer->purchase_order_id)->lockForUpdate()->firstOrFail();
+
+            // Idempotent replay: this exact edit already landed.
+            if ($key !== '' && $invoice->edit_idempotency_key
+                && hash_equals((string) $invoice->edit_idempotency_key, $key)) {
+                return $transfer->load(['saleInvoice', 'purchaseOrder']);
+            }
+
+            if ((int) $transfer->from_store_id !== (int) $sourceStore->id
+                || (int) $invoice->store_id !== (int) $sourceStore->id) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'Only the source store can edit this transfer.',
+                ]);
+            }
+
+            $targetStore = Store::where('is_active', true)->find((int) $transfer->to_store_id);
+            if (! $targetStore) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'The target store of this transfer is missing or inactive.',
+                ]);
+            }
+
+            $this->assertTransferEditable($transfer, $invoice, $purchase, $saleData);
+
+            // ── Target-side intact check; collect the units to park ──────
+            $purchase->loadMissing(['items.stockUnits', 'items.stockBatches']);
+            $parkedUnitIds = [];
+            foreach ($purchase->items as $poItem) {
+                foreach ($poItem->stockUnits as $unit) {
+                    if ($unit->status !== 'available') {
+                        throw ValidationException::withMessages([
+                            'transfer' => "This transfer cannot be edited: {$poItem->manual_item_name} (IMEI "
+                                . ($unit->imei1 ?? $unit->serial_number ?? "#{$unit->id}")
+                                . ") has already been sold or moved in {$targetStore->name}.",
+                        ]);
+                    }
+                    $parkedUnitIds[] = $unit->id;
+                }
+                foreach ($poItem->stockBatches as $batch) {
+                    if ((int) $batch->remaining_qty !== (int) $batch->received_qty) {
+                        throw ValidationException::withMessages([
+                            'transfer' => "This transfer cannot be edited: batch {$batch->batch_number} "
+                                . "({$poItem->manual_item_name}) has already been sold from in {$targetStore->name}.",
+                        ]);
+                    }
+                }
+            }
+
+            // Park the target units (see docblock). Status-only flip: no
+            // ledger or snapshot movement — quantities do not change.
+            if ($parkedUnitIds !== []) {
+                StockUnit::whereIn('id', $parkedUnitIds)->update(['status' => 'sold']);
+            }
+
+            // 1. The sale half — reverse + repost in the source store.
+            $invoice = $this->sales->updateSale($sourceStore, $user, $invoice, $saleData, viaTransfer: true);
+
+            // 2. The purchase half — rebuilt from the POSTED invoice and
+            //    mapped onto the target store's existing rows.
+            $invoice->load([
+                'items.stockUnit.deviceHealth',
+                'items.stockBatch',
+                'items.batchAllocations.stockBatch',
+                'payments',
+            ]);
+
+            $counterpart = Supplier::query()
+                ->where('store_id', $targetStore->id)
+                ->where('linked_store_id', $sourceStore->id)
+                ->where('is_active', true)
+                ->first();
+            if (! $counterpart) {
+                throw ValidationException::withMessages([
+                    'transfer' => "Transfer blocked: {$targetStore->name} no longer has {$sourceStore->name} attached as a supplier.",
+                ]);
+            }
+
+            $purchaseData = $this->buildPurchaseEditData($invoice, $purchase, $counterpart, $transfer, $key);
+            $purchase = $this->purchases->updatePurchase($targetStore, $user, $purchase, $purchaseData, viaTransfer: true, transferParkedUnitIds: $parkedUnitIds);
+
+            // 3. Settlement — void the old mirror, replay the new splits.
+            $this->voidMirroredPayments($targetStore, $user, $purchase, $transfer);
+            $purchase->refresh();
+            $this->mirrorPayments($targetStore, $user, $invoice, $purchase, $transfer->transfer_number, 'transfer-edit-' . $key);
+
+            // 4. Both halves must total identically — anything else is a
+            //    bug, and the transaction roll-back is the safe outcome.
+            $invoice->refresh();
+            $purchase->refresh();
+            if (abs((float) $invoice->grand_total - (float) $purchase->grand_total) > 0.005) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'Transfer edit failed: the sale and purchase totals do not match. Nothing was changed.',
+                ]);
+            }
+
+            Log::info('Stock transfer edited', [
+                'transfer_number' => $transfer->transfer_number,
+                'from_store_id'    => $sourceStore->id,
+                'to_store_id'      => $targetStore->id,
+                'invoice_id'       => $invoice->id,
+                'purchase_id'      => $purchase->id,
+                'user_id'          => $user->id,
+            ]);
+
+            return $transfer->load(['saleInvoice', 'purchaseOrder']);
+        });
+    }
+
+    /**
+     * Pre-flight gates for a transfer edit (see updateTransfer docblock).
+     *
+     * @throws ValidationException
+     */
+    private function assertTransferEditable(StockTransfer $transfer, Invoice $invoice, PurchaseOrder $purchase, array $saleData): void
+    {
+        $fail = fn (string $field, string $msg) => throw ValidationException::withMessages([$field => $msg]);
+
+        if ($transfer->status !== 'completed') {
+            $fail('transfer', 'Only a completed transfer can be edited.');
+        }
+
+        if (CreditNote::where('invoice_id', $invoice->id)->where('status', 'issued')->exists()) {
+            $fail('transfer', "Transfer {$transfer->transfer_number} is final: a credit note has been issued against its sale.");
+        }
+        if (DebitNote::where('purchase_order_id', $purchase->id)->where('status', 'issued')->exists()) {
+            $fail('transfer', "Transfer {$transfer->transfer_number} is final: a debit note has been issued against its purchase.");
+        }
+
+        // The party IS the bridge identity (it selects the target store) —
+        // it cannot change in an edit.
+        if (($saleData['party_type'] ?? null) !== 'supplier'
+            || (int) ($saleData['party_id'] ?? 0) !== (int) $invoice->party_id) {
+            $fail('party_id', 'The target store of a transfer cannot be changed. Create a new transfer instead.');
+        }
+
+        $lines = $saleData['lines'] ?? [];
+        if ($lines === []) {
+            $fail('lines', 'A transfer must keep at least one item. To take everything back, keep one item here and return the rest, or reverse the transfer documents.');
+        }
+
+        // Only stock that was part of THIS transfer may appear in the edit.
+        $invoice->loadMissing(['items.batchAllocations']);
+        $originalUnitIds = [];
+        $originalBulkQty = [];
+        foreach ($invoice->items as $item) {
+            if ($item->stock_unit_id) {
+                $originalUnitIds[] = (int) $item->stock_unit_id;
+            } else {
+                $vid = (int) ($item->product_variant_id ?? 0);
+                $originalBulkQty[$vid] = ($originalBulkQty[$vid] ?? 0) + (int) $item->quantity;
+            }
+        }
+
+        $payloadBulkQty = [];
+        foreach ($lines as $i => $line) {
+            if (! empty($line['is_serialized'])) {
+                foreach ($line['stock_unit_ids'] ?? [] as $unitId) {
+                    if (! in_array((int) $unitId, $originalUnitIds, true)) {
+                        $fail("lines.{$i}", 'This item was not part of the original transfer. Create a new transfer for additional items.');
+                    }
+                }
+            } else {
+                $vid = (int) ($line['product_variant_id'] ?? 0);
+                $payloadBulkQty[$vid] = ($payloadBulkQty[$vid] ?? 0) + (int) ($line['qty'] ?? 0);
+            }
+        }
+        foreach ($payloadBulkQty as $vid => $qty) {
+            if (! isset($originalBulkQty[$vid])) {
+                $fail('lines', 'An item in the edit was not part of the original transfer. Create a new transfer for additional items.');
+            }
+            if ($qty > $originalBulkQty[$vid]) {
+                $fail('lines', 'Quantity cannot exceed what was originally transferred. Create a new transfer for the extra quantity.');
+            }
+        }
+
+        // Settlement headroom on the target side: money the target store
+        // paid against this purchase OUTSIDE the transfer mirror (manual
+        // supplier payments) is never touched by an edit, so the edited
+        // totals must still cover it.
+        $manualPaid = $this->r2((float) $purchase->paid_amount - (float) $invoice->paid_amount);
+        $newPaid = $this->r2((float) ($saleData['paid_amount'] ?? 0));
+        $newGrand = $this->r2((float) ($saleData['grand_total'] ?? 0));
+        if ($manualPaid > 0.005 && $manualPaid + $newPaid > $newGrand + 0.005) {
+            $fail('transfer', "This transfer cannot be edited: {$this->r2($manualPaid)} was paid separately against the purchase in the target store. Settle or adjust that payment first.");
+        }
+    }
+
+    /**
+     * The purchase-edit payload: buildPurchaseData() output (the same
+     * builder transfer() uses, so fiscal rules stay identical) with the
+     * target store's existing row IDs mapped onto each line, which is what
+     * PurchaseService::updatePurchase needs to apply its row-level guards
+     * and preserve the surviving stock rows' identities.
+     */
+    private function buildPurchaseEditData(Invoice $invoice, PurchaseOrder $purchase, Supplier $vendor, StockTransfer $transfer, string $editKey): array
+    {
+        $data = $this->buildPurchaseData($invoice, $vendor, $transfer->transfer_number, 'edit-' . $editKey);
+        // edit_idempotency_key columns are varchar(36) (UUID-sized) — the raw
+        // edit key fits; a prefixed variant overflows (SQLSTATE 22001). The
+        // sale half stores the same key in its own table, so replay checks
+        // on both halves stay consistent.
+        $data['idempotency_key'] = $editKey;
+
+        $purchase->loadMissing(['items.stockUnits', 'items.stockBatches']);
+
+        // Target serialized units by identifier — the twins carry the same
+        // IMEI/serial as the source units behind the invoice items.
+        $targetUnitByKey = [];
+        foreach ($purchase->items as $poItem) {
+            foreach ($poItem->stockUnits as $unit) {
+                $k = ($unit->imei1 ?? '') . '|' . ($unit->imei2 ?? '') . '|' . ($unit->serial_number ?? '');
+                $targetUnitByKey[$k] = $unit;
+            }
+        }
+        $usedBulkItemIds = [];
+
+        // buildPurchaseData emits exactly one line per invoice item, in
+        // invoice-item order — line $li belongs to $invoice->items[$li].
+        foreach ($data['lines'] as $li => $line) {
+            $invoiceItem = $invoice->items[$li] ?? null;
+            if (! $invoiceItem) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'Transfer edit failed: a sale line could not be mapped to the purchase. Nothing was changed.',
+                ]);
+            }
+
+            if (! empty($line['is_serialized'])) {
+                $src = $invoiceItem->stockUnit;
+                $k = ($src?->imei1 ?? '') . '|' . ($src?->imei2 ?? '') . '|' . ($src?->serial_number ?? '');
+                $target = $targetUnitByKey[$k] ?? null;
+                if (! $target) {
+                    throw ValidationException::withMessages([
+                        'transfer' => 'Transfer edit failed: a transferred unit could not be found in the target store. Nothing was changed.',
+                    ]);
+                }
+                $data['lines'][$li]['purchase_order_item_id'] = $target->purchase_order_item_id;
+                $data['lines'][$li]['units'][0]['stock_unit_id'] = $target->id;
+                continue;
+            }
+
+            // Bulk: the target item with the same variant + name, not yet
+            // consumed by an earlier line of this payload.
+            $match = null;
+            foreach ($purchase->items as $poItem) {
+                if (in_array($poItem->id, $usedBulkItemIds, true)
+                    || $poItem->stockUnits->isNotEmpty()
+                    || (int) ($poItem->product_variant_id ?? 0) !== (int) ($line['product_variant_id'] ?? 0)
+                    || (string) ($poItem->manual_item_name ?? '') !== (string) ($line['manual_item_name'] ?? '')) {
+                    continue;
+                }
+                $match = $poItem;
+                break;
+            }
+            if (! $match || $match->stockBatches->count() !== 1) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'Transfer edit failed: a transferred batch could not be mapped in the target store. Nothing was changed.',
+                ]);
+            }
+            $usedBulkItemIds[] = $match->id;
+            $batch = $match->stockBatches->first();
+            $data['lines'][$li]['purchase_order_item_id'] = $match->id;
+            $data['lines'][$li]['batches'] = [[
+                'stock_batch_id' => $batch->id,
+                'quantity'       => (int) $line['ordered_qty'],
+                'base_cost'      => $line['base_cost'],
+                'landed_cost'    => $line['landed_cost'],
+            ]];
+        }
+
+        return $data;
+    }
+
+    /**
+     * Void the supplier payments that mirrorPayments() created for this
+     * transfer: reverse each JE-SUPPAY journal, mark the payment row
+     * 'voided' (rows are kept — supplier-payment journal numbers are
+     * sequence-based, so deleting a row would let a later payment reuse a
+     * number that already exists), negate its summary delta, and reset the
+     * purchase's paid/due baseline to whatever was settled OUTSIDE the
+     * mirror (manual payments stay untouched).
+     *
+     * Mirrored payments are identified by their journals: the JE-SUPPAY
+     * narration carries "Stock transfer {number}". The payment row paired
+     * with a journal is the seq-th payment of the purchase (the journal
+     * sequence is the payment count at posting time and payment rows are
+     * never deleted, so the pairing is stable). Amounts must agree to the
+     * paise — any mismatch aborts the edit rather than guessing.
+     */
+    private function voidMirroredPayments(Store $targetStore, User $user, PurchaseOrder $purchase, StockTransfer $transfer): void
+    {
+        $entries = JournalEntry::query()
+            ->where('store_id', $targetStore->id)
+            ->where('reference_type', PurchaseOrder::class)
+            ->where('reference_id', $purchase->id)
+            ->where('entry_number', 'like', 'JE-SUPPAY-%')
+            ->where('narration', 'like', '%' . $transfer->transfer_number . '%')
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('journal_entries as rev')
+                    ->whereColumn('rev.reverses_journal_id', 'journal_entries.id');
+            })
+            ->with('lines.account')
+            ->get();
+
+        if ($entries->isEmpty()) {
+            return;
+        }
+
+        $payments = Payment::query()
+            ->where('payable_type', PurchaseOrder::class)
+            ->where('payable_id', $purchase->id)
+            ->orderBy('id')
+            ->get()
+            ->values();
+
+        $voidedTotal = 0.0;
+        foreach ($entries as $entry) {
+            $seq = (int) substr($entry->entry_number, strrpos($entry->entry_number, '-') + 1);
+            $payment = $payments->get($seq - 1);
+            $journalAmount = $this->r2($entry->lines
+                ->filter(fn ($l) => ($l->account?->code ?? null) === '2010')
+                ->sum(fn ($l) => (float) $l->debit));
+
+            if (! $payment || $payment->status !== 'completed'
+                || abs((float) $payment->amount - $journalAmount) > 0.005) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'Transfer edit blocked: the mirrored settlement in the target store could not be verified. No changes were made.',
+                ]);
+            }
+
+            $reversal = $this->accounting->reverse($entry, $user->id, 'Transfer edited — settlement re-mirrored', $entry->entry_date);
+            $reversal->update(['reverses_journal_id' => $entry->id]);
+
+            $payment->update(['status' => 'voided']);
+
+            $this->summaries->record(SummaryDeltaFactory::forSupplierPayment(
+                $targetStore->id,
+                substr((string) $payment->paid_at, 0, 10),
+                (string) $payment->payment_mode,
+                -1 * (float) $payment->amount,
+            ));
+
+            $voidedTotal += (float) $payment->amount;
+        }
+
+        $purchase->refresh();
+        $paid = $this->r2((float) $purchase->paid_amount - $voidedTotal);
+        $dnTotal = $this->r2(DebitNote::where('purchase_order_id', $purchase->id)
+            ->where('status', 'issued')
+            ->sum('grand_total'));
+        $due = max(0.0, $this->r2((float) $purchase->grand_total - $paid - $dnTotal));
+
+        $purchase->update([
+            'paid_amount'    => $paid,
+            'due_amount'     => $due,
+            'payment_status' => $due <= 0.0 ? 'paid' : ($paid > 0 ? 'partial' : 'unpaid'),
+        ]);
     }
 
     /**
@@ -420,9 +824,10 @@ final class StockTransferService
      * reference — the same rows the target store would have created by
      * paying the bill manually.
      */
-    private function mirrorPayments(Store $targetStore, User $user, Invoice $invoice, PurchaseOrder $purchase, string $transferNumber): void
+    private function mirrorPayments(Store $targetStore, User $user, Invoice $invoice, PurchaseOrder $purchase, string $transferNumber, ?string $idempotencyKeyPrefix = null): void
     {
         $modes = [];
+        $splitIndex = 0;
         foreach ($invoice->payments as $payment) {
             $amount = $this->r2($payment->amount);
             if ($amount <= 0) {
@@ -438,7 +843,11 @@ final class StockTransferService
                 'paid_at'           => $invoice->invoice_date->toDateString(),
                 'txn_reference'     => $payment->reference,
                 'notes'             => "Stock transfer {$transferNumber} — settlement of sale {$invoice->invoice_number}.",
+                // Set on transfer edits so a retried edit replays its own
+                // settlement instead of paying twice. Create passes null.
+                'idempotency_key'   => $idempotencyKeyPrefix !== null ? $idempotencyKeyPrefix . '-' . $splitIndex : null,
             ]);
+            $splitIndex++;
         }
 
         if ($modes !== []) {

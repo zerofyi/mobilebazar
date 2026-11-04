@@ -1,5 +1,5 @@
 import { Head, Link } from "@inertiajs/react";
-import { ArrowLeftRight, ArrowRight, ExternalLink, FileMinus2, FilePlus2 } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, ExternalLink, FileMinus2, FilePlus2, Pencil } from "lucide-react";
 import { dashboard } from "@/routes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,7 @@ interface Props {
         uuid: string;
         transfer_number: string;
         status: string;
+        can_edit: boolean;
         direction: "outgoing" | "incoming";
         from_store: StoreRef | null;
         to_store: StoreRef | null;
@@ -114,9 +115,19 @@ export default function Show({ transfer }: Props) {
                     </div>
                     <p className="mt-2 max-w-2xl text-xs text-muted-foreground">
                         This transfer is a bridge between the two documents below — items and prices live on them,
-                        not here. Transfer documents cannot be edited or deleted; returns go through a credit note
-                        (sale side) or a debit note (purchase side).
+                        not here. The two documents cannot be edited or deleted directly, but the transfer itself
+                        can be edited from the source store (change prices, or take an item back) — both documents
+                        are re-posted together. Once a credit note or debit note is issued, the transfer is final.
                     </p>
+                    {transfer.can_edit && (
+                        <div className="mt-3">
+                            <Button size="sm" asChild>
+                                <Link href={`/app/transfers/${transfer.uuid}/edit`}>
+                                    <Pencil className="mr-1.5 size-3.5" /> Edit transfer
+                                </Link>
+                            </Button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="grid items-start gap-4 md:grid-cols-2">

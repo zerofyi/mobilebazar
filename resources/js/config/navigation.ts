@@ -136,7 +136,7 @@ export const COMMON_NAV: RoleNavigation = {
                     permission: 'sales.view',
                 },
                 {
-                    title: 'Buyback',
+                    title: 'Exchange',
                     href: '/app/buyback/create',
                     icon: ArrowLeftRight,
                     permission: 'sales.create',

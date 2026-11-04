@@ -218,12 +218,16 @@ final class PurchaseService
      * @throws MonthLockedException
      * @throws \App\Exceptions\AccountingException
      */
-    public function updatePurchase(Store $store, User $user, PurchaseOrder $po, array $data): PurchaseOrder
+    public function updatePurchase(Store $store, User $user, PurchaseOrder $po, array $data, bool $viaTransfer = false, array $transferParkedUnitIds = []): PurchaseOrder
     {
         // A stock-transfer purchase is one half of a two-store bridge —
         // editing it would desync the source store's sale. Returns go
-        // through a debit note, like any other posted purchase.
-        if (StockTransfer::where('purchase_order_id', $po->id)->exists()) {
+        // through a debit note, like any other posted purchase. The ONLY
+        // exception is the transfer edit flow itself ($viaTransfer), which
+        // edits both halves atomically and passes the target units it
+        // parked (their source-store twins had to be freed first — see
+        // StockTransferService::updateTransfer).
+        if (! $viaTransfer && StockTransfer::where('purchase_order_id', $po->id)->exists()) {
             throw ValidationException::withMessages([
                 'purchase' => "Purchase {$po->po_number} cannot be changed: it belongs to a stock transfer. Use a debit note for returns.",
             ]);
@@ -263,7 +267,7 @@ final class PurchaseService
         }
 
         try {
-            return DB::transaction(function () use ($store, $user, $po, $data, $key) {
+            return DB::transaction(function () use ($store, $user, $po, $data, $key, $transferParkedUnitIds) {
                 $po = PurchaseOrder::where('store_id', $store->id)
                     ->where('id', $po->id)
                     ->lockForUpdate()
@@ -274,9 +278,14 @@ final class PurchaseService
                     return $po;
                 }
 
-                // Row-level guards: locked stock must come back unchanged.
-                // No document-level gate — every purchase is editable.
-                $locked = $this->validateRowGuards($po, $data);
+                // Row-level guards: locked stock must come back with its
+                // identity unchanged; its costs are PINNED to the recorded
+                // values (never trusted from the payload, never a reason to
+                // reject the whole edit). $data comes back corrected, with
+                // line/header totals recomputed when pinning moved money.
+                // No document-level gate — every purchase is editable, and
+                // editing the intact rows never depends on the sold ones.
+                [$locked, $data] = $this->validateRowGuards($po, $data, $transferParkedUnitIds);
 
                 $newRevision = $po->revision + 1;
 
@@ -475,24 +484,45 @@ final class PurchaseService
     }
 
     /**
-     * Row-level guards for purchase edit. Returns the locked stock IDs that
-     * must be preserved untouched: ['units' => [...], 'batches' => [...]].
+     * Row-level guards for purchase edit. Returns [lockedIds, correctedData]
+     * where lockedIds are the stock rows that must be preserved untouched:
+     * ['units' => [...], 'batches' => [...]].
      *
      * Rules:
      * - Serialized unit with status != 'available' (sold/reserved): must be
-     *   present in the payload unchanged (same IMEI/serial/cost). Cannot be
-     *   removed or modified.
+     *   present in the payload with the same IMEI/serial — identity is
+     *   non-negotiable and removing one is a 422. Its COST is different:
+     *   it is pinned to the recorded value instead of being rejected. The
+     *   edit form reconstructs a sold row's cost from item-level aggregates
+     *   (per-unit discount split, tax backing-out), so its echo can drift
+     *   by paise — and rejecting on that drift blocked editing the INTACT
+     *   items on the same bill, which is the normal case (10 items bought,
+     *   2 sold, fix the price of an unsold one). The recorded cost wins
+     *   silently; the sold unit's valuation never moves.
      * - Bulk batch with remaining < received (partially sold): cannot be
-     *   deleted; new qty cannot go below the sold portion; cost cannot change.
+     *   deleted; new qty cannot go below the sold portion; cost pinned the
+     *   same way. The unsold remainder's quantity stays fully editable.
      * - Line deletion: only if zero stock movements on all its units/batches.
      * - Variant change on a line: only if the line has no stock rows.
+     * - Transfer-parked units (ids passed by StockTransferService) count as
+     *   editable even though their status is not 'available' — the transfer
+     *   edit parked them itself, after verifying they were intact, so their
+     *   source-store twins could be restored without hitting the global
+     *   active-IMEI unique index.
+     *
+     * When pinning changes any line's money, that line's aggregates and the
+     * header totals (subtotal / tax / grand) are recomputed from the
+     * corrected lines, so the journal, summaries and stock all post the
+     * same numbers. Documents with no locked stock keep the payload totals
+     * untouched.
      *
      * @throws ValidationException (422) on any violation.
      */
-    private function validateRowGuards(PurchaseOrder $po, array $data): array
+    private function validateRowGuards(PurchaseOrder $po, array $data, array $parkedUnitIds = []): array
     {
         $locked = ['units' => [], 'batches' => []];
         $fail = fn (string $field, string $msg) => throw ValidationException::withMessages([$field => $msg]);
+        $parked = collect($parkedUnitIds)->map(fn ($id) => (int) $id);
 
         $po->loadMissing(['items.stockUnits', 'items.stockBatches']);
 
@@ -506,11 +536,16 @@ final class PurchaseService
             }
         }
 
+        $pinUnits = [];   // stock_unit_id  => ['base' => float, 'landed' => float]
+        $pinBatches = []; // stock_batch_id => ['base' => float, 'landed' => float]
+
         foreach ($po->items as $item) {
             $inPayload = $payloadLines[$item->id] ?? [];
 
             // Collect locked stock for this line.
-            $lockedUnits = $item->stockUnits->filter(fn ($u) => $u->status !== 'available');
+            $lockedUnits = $item->stockUnits->filter(
+                fn ($u) => $u->status !== 'available' && ! $parked->contains($u->id)
+            );
             $lockedBatches = $item->stockBatches->filter(fn ($b) => $b->remaining_qty < $b->received_qty);
 
             if ($inPayload === []) {
@@ -543,7 +578,8 @@ final class PurchaseService
                 $fail("{$field}.product_variant_id", "Cannot change the product on a line that already has stock. Remove the stock first or create a new line.");
             }
 
-            // Locked serialized units must come back identical.
+            // Locked serialized units must come back with the same identity.
+            // Their costs are pinned to the recorded values (see docblock).
             $payloadUnits = collect($line['units'] ?? [])->keyBy(fn ($u) => $u['stock_unit_id'] ?? 'new_' . ($u['imei1'] ?? $u['serial_number'] ?? uniqid()));
             foreach ($lockedUnits as $unit) {
                 $locked['units'][] = $unit->id;
@@ -559,12 +595,14 @@ final class PurchaseService
                     $fail("{$field}.units", "IMEI {$unit->imei1} cannot be modified: this unit has been sold or reserved.");
                 }
                 $puLanded = (float) ($pu['unit_landed_cost'] ?? $pu['landed_cost'] ?? 0);
-                if (abs($puLanded - (float) $unit->landed_cost) > 0.005) {
-                    $fail("{$field}.units", "Cost of IMEI {$unit->imei1} cannot be changed: this unit has been sold or reserved.");
+                $puBase = (float) ($pu['unit_base_cost'] ?? $pu['base_cost'] ?? $puLanded);
+                if (abs($puLanded - (float) $unit->landed_cost) > 0.005
+                    || abs($puBase - (float) $unit->base_cost) > 0.005) {
+                    $pinUnits[$unit->id] = ['base' => (float) $unit->base_cost, 'landed' => (float) $unit->landed_cost];
                 }
             }
 
-            // Locked batches: qty floor + cost freeze.
+            // Locked batches: qty floor is a hard guard; cost is pinned.
             $payloadBatches = collect($line['batches'] ?? [])->keyBy(fn ($b) => $b['stock_batch_id'] ?? 'new');
             foreach ($lockedBatches as $batch) {
                 $locked['batches'][] = $batch->id;
@@ -576,13 +614,112 @@ final class PurchaseService
                 if ((int) ($pb['quantity'] ?? 0) < $soldQty) {
                     $fail("{$field}.batches", "Batch {$batch->batch_number}: quantity cannot go below {$soldQty} (already sold).");
                 }
-                if (abs((float) ($pb['landed_cost'] ?? 0) - (float) $batch->landed_cost) > 0.005) {
-                    $fail("{$field}.batches", "Cost of batch {$batch->batch_number} cannot be changed: some of its stock has been sold.");
+                if (abs((float) ($pb['landed_cost'] ?? 0) - (float) $batch->landed_cost) > 0.005
+                    || abs((float) ($pb['base_cost'] ?? $pb['landed_cost'] ?? 0) - (float) $batch->base_cost) > 0.005) {
+                    $pinBatches[$batch->id] = ['base' => (float) $batch->base_cost, 'landed' => (float) $batch->landed_cost];
                 }
             }
         }
 
-        return $locked;
+        if ($pinUnits !== [] || $pinBatches !== []) {
+            $data = $this->applyLockedPins($data, $pinUnits, $pinBatches);
+        }
+
+        return [$locked, $data];
+    }
+
+    /**
+     * Overwrite the payload costs of locked (sold / partially-sold) stock
+     * with their recorded values, then recompute the aggregates of every
+     * line that contained a pinned row and — if any line moved — the header
+     * totals, so the repost is internally consistent to the paise.
+     *
+     * Per-unit tax is landed − base in every tax posture of this engine
+     * (exclusive: landed = base + tax; inclusive: landed = net and base is
+     * net backed out of tax; margin / non-GST: landed = base, tax 0), so a
+     * pinned line's tax_amount is exactly Σ(landed − base).
+     */
+    private function applyLockedPins(array $data, array $pinUnits, array $pinBatches): array
+    {
+        $anyLineTouched = false;
+
+        foreach ($data['lines'] ?? [] as $li => $line) {
+            $lineTouched = false;
+
+            if (! empty($line['is_serialized'])) {
+                foreach ($line['units'] ?? [] as $ui => $u) {
+                    $id = (int) ($u['stock_unit_id'] ?? 0);
+                    if ($id && isset($pinUnits[$id])) {
+                        $data['lines'][$li]['units'][$ui]['unit_base_cost'] = $pinUnits[$id]['base'];
+                        $data['lines'][$li]['units'][$ui]['unit_landed_cost'] = $pinUnits[$id]['landed'];
+                        $lineTouched = true;
+                    }
+                }
+                if ($lineTouched) {
+                    $units = $data['lines'][$li]['units'];
+                    $n = max(1, count($units));
+                    $baseSum = 0.0;
+                    $landedSum = 0.0;
+                    foreach ($units as $u) {
+                        $b = (float) ($u['unit_base_cost'] ?? $u['unit_landed_cost'] ?? 0);
+                        $l = (float) ($u['unit_landed_cost'] ?? $b);
+                        $baseSum += $b;
+                        $landedSum += $l;
+                    }
+                    $data['lines'][$li]['base_cost'] = $this->r2($baseSum / $n);
+                    $data['lines'][$li]['landed_cost'] = $this->r2($landedSum / $n);
+                    $data['lines'][$li]['tax_amount'] = $this->r2($landedSum - $baseSum);
+                    $data['lines'][$li]['line_total'] = $this->r2($landedSum);
+                }
+            } else {
+                foreach ($line['batches'] ?? [] as $bi => $b) {
+                    $id = (int) ($b['stock_batch_id'] ?? 0);
+                    if ($id && isset($pinBatches[$id])) {
+                        $data['lines'][$li]['batches'][$bi]['base_cost'] = $pinBatches[$id]['base'];
+                        $data['lines'][$li]['batches'][$bi]['landed_cost'] = $pinBatches[$id]['landed'];
+                        $lineTouched = true;
+                    }
+                }
+                if ($lineTouched) {
+                    $qtySum = 0;
+                    $baseSum = 0.0;
+                    $landedSum = 0.0;
+                    foreach ($data['lines'][$li]['batches'] as $b) {
+                        $q = (int) ($b['quantity'] ?? 0);
+                        $qtySum += $q;
+                        $baseSum += (float) ($b['base_cost'] ?? 0) * $q;
+                        $landedSum += (float) ($b['landed_cost'] ?? 0) * $q;
+                    }
+                    $n = max(1, $qtySum);
+                    $data['lines'][$li]['base_cost'] = $this->r2($baseSum / $n);
+                    $data['lines'][$li]['landed_cost'] = $this->r2($landedSum / $n);
+                    $data['lines'][$li]['tax_amount'] = $this->r2($landedSum - $baseSum);
+                    $data['lines'][$li]['line_total'] = $this->r2($landedSum);
+                    $data['lines'][$li]['ordered_qty'] = $qtySum;
+                }
+            }
+
+            $anyLineTouched = $anyLineTouched || $lineTouched;
+        }
+
+        if ($anyLineTouched) {
+            $subtotal = 0.0;
+            $tax = 0.0;
+            foreach ($data['lines'] as $line) {
+                $qty = ! empty($line['is_serialized'])
+                    ? count($line['units'] ?? [])
+                    : (int) ($line['ordered_qty'] ?? 0);
+                $subtotal += (float) ($line['base_cost'] ?? 0) * $qty;
+                $tax += (float) ($line['tax_amount'] ?? 0);
+            }
+            $data['subtotal'] = $this->r2($subtotal);
+            $data['tax_amount'] = $this->r2($tax);
+            $data['grand_total'] = $this->r2(
+                $subtotal - (float) ($data['discount_amount'] ?? 0) + $tax + (float) ($data['shipping_charge'] ?? 0)
+            );
+        }
+
+        return $data;
     }
 
     /**

@@ -180,21 +180,18 @@ final class SummaryDeltaFactory
     }
 
     /**
-     * Supplier payment: the payable goes down. Cash/bank movement is tracked
-     * in the collected buckets as negative (money out).
+     * Supplier payment: the payable goes down — and nothing else. The
+     * cash/upi/card/bank_collected buckets are COLLECTIONS ONLY (money in
+     * from customers); money paid out to suppliers never touches them
+     * (user decision, Nov 5, 2026 — previously this subtracted the amount
+     * from the mode bucket, so a store that only paid a supplier showed
+     * negative "Collected Today"). $mode stays in the signature for caller
+     * compatibility; it no longer routes anywhere.
      */
     public static function forSupplierPayment(int $storeId, string $date, string $mode, float $amount): SummaryDelta
     {
-        $bucketKey = match (strtolower($mode)) {
-            'cash'   => 'cash_collected',
-            'upi'    => 'upi_collected',
-            'card', 'credit_card', 'debit_card' => 'card_collected',
-            default  => 'bank_collected',
-        };
-
         return new SummaryDelta($storeId, $date, [
             'total_payables' => -$amount,
-            $bucketKey       => -$amount,
         ]);
     }
 

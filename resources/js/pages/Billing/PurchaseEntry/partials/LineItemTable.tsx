@@ -111,6 +111,11 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
     const cv = state.columnVisibility;
 
     // ── Row lock status (edit mode): sold/reserved stock can't be touched ──
+    // A sold/reserved serialized unit is fully read-only. A partially-sold
+    // batch is different: its cost is frozen (the sold portion is already
+    // in the books), but the quantity of the UNSOLD remainder stays
+    // editable — it just cannot drop below the sold quantity. The backend
+    // applies exactly the same split (row guards in PurchaseService).
     const isSerializedLocked = row.is_serialized && row.unit_status != null && row.unit_status !== "available";
     const soldQty = !row.is_serialized && row.batch_received_qty != null && row.batch_remaining_qty != null
         ? Math.max(0, row.batch_received_qty - row.batch_remaining_qty)
@@ -122,9 +127,16 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
         : isBatchPartiallyLocked ? `${soldQty} sold` : null;
 
     const update = useCallback((field: keyof LineRow, value: unknown) => {
+        // Partially-sold batch: quantity of the remainder is the one
+        // editable field, floored at the sold quantity.
+        if (isBatchPartiallyLocked && field === "qty") {
+            const next = Math.max(soldQty, typeof value === "number" ? value : 0);
+            dispatch({ type: "UPDATE_ROW", payload: { id: row.id, field, value: next } });
+            return;
+        }
         if (isLocked) return; // locked rows are read-only
         dispatch({ type: "UPDATE_ROW", payload: { id: row.id, field, value } });
-    }, [dispatch, row.id, isLocked]);
+    }, [dispatch, row.id, isLocked, isBatchPartiallyLocked, soldQty]);
     const cycleWarranty = () => { const next: Record<WarrantyMode, WarrantyMode> = { A: "D", D: "E", E: "A" }; update("warrantyMode", next[row.warrantyMode]); };
     const cycleTaxMode = () => update("taxMode", row.taxMode === "I" ? "E" : "I");
 
@@ -146,7 +158,7 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
             )}
         >
             <TableCell className="p-0 text-center font-semibold text-muted-foreground border-r bg-muted/10 h-9">
-                <span className="inline-flex items-center gap-1" title={isLocked ? `Locked: ${lockLabel} — cannot be modified` : undefined}>
+                <span className="inline-flex items-center gap-1" title={isSerializedLocked ? `Locked: ${lockLabel} — cannot be modified` : isBatchPartiallyLocked ? `${soldQty} of this batch are sold — cost is locked, but the quantity can be changed (not below ${soldQty})` : undefined}>
                     {isLocked && <Lock className="size-3 text-muted-foreground" />}
                     {index + 1}
                 </span>
@@ -327,13 +339,13 @@ const RowView = React.memo(function RowView({ row, index, hasDupIdentifier }: { 
             <TableCell className="p-0 border-r h-9">
                 <Input
                     type="number"
-                    min="1"
-                    disabled={row.is_serialized || isLocked}
+                    min={isBatchPartiallyLocked ? soldQty : 1}
+                    disabled={row.is_serialized || isSerializedLocked}
                     value={row.qty}
                     onChange={(e) =>
                         update(
                             "qty",
-                            Math.max(1, parseInt(e.target.value, 10) || 1),
+                            Math.max(isBatchPartiallyLocked ? soldQty : 1, parseInt(e.target.value, 10) || 1),
                         )
                     }
                     className="h-full border-none rounded-none shadow-none text-xs text-center px-0.5 font-semibold disabled:bg-muted/30 bg-transparent"

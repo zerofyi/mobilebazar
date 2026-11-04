@@ -381,7 +381,7 @@ final class SaleService
     | is never deleted.
     */
 
-    public function updateSale(Store $store, User $user, Invoice $invoice, array $data): Invoice
+    public function updateSale(Store $store, User $user, Invoice $invoice, array $data, bool $viaTransfer = false): Invoice
     {
         $key = (string) $data['idempotency_key'];
 
@@ -409,7 +409,7 @@ final class SaleService
         }
 
         try {
-            return DB::transaction(function () use ($store, $user, $invoice, $data, $key) {
+            return DB::transaction(function () use ($store, $user, $invoice, $data, $key, $viaTransfer) {
                 $invoice = Invoice::where('store_id', $store->id)
                     ->where('id', $invoice->id)
                     ->lockForUpdate()
@@ -425,8 +425,10 @@ final class SaleService
 
                 [$partyClass, $party] = $this->resolveParty($store, $data);
 
-                // Gates: loan link, unit states, buyback conflicts.
-                $this->assertSaleEditable($store, $invoice);
+                // Gates: loan link, unit states, buyback conflicts. The
+                // transfer bridge gate is the only one the transfer edit
+                // flow may skip — it edits both halves atomically itself.
+                $this->assertSaleEditable($store, $invoice, $viaTransfer);
 
                 $newRevision = $invoice->revision + 1;
 
@@ -550,12 +552,14 @@ final class SaleService
      * Edit/delete gates. Throws ValidationException (422) when the sale's
      * effects can no longer be cleanly reversed.
      */
-    private function assertSaleEditable(Store $store, Invoice $invoice): void
+    private function assertSaleEditable(Store $store, Invoice $invoice, bool $viaTransfer = false): void
     {
         // A stock-transfer sale is one half of a two-store bridge — editing
         // or deleting it would desync the target store's purchase. Returns
-        // go through a credit note, like any other posted sale.
-        if (StockTransfer::where('sale_invoice_id', $invoice->id)->exists()) {
+        // go through a credit note, like any other posted sale. The transfer
+        // edit flow passes $viaTransfer: it re-posts the purchase half in
+        // the same transaction, so the bridge stays in sync by construction.
+        if (! $viaTransfer && StockTransfer::where('sale_invoice_id', $invoice->id)->exists()) {
             throw ValidationException::withMessages([
                 'invoice' => "Sale {$invoice->invoice_number} cannot be changed: it belongs to a stock transfer. Use a credit note for returns.",
             ]);

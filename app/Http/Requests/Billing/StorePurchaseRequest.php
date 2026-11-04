@@ -226,12 +226,40 @@ class StorePurchaseRequest extends FormRequest
             }
 
             $columnMap = ['imei1' => 'active_imei1', 'imei2' => 'active_imei2', 'serial_number' => 'active_serial'];
+            $excludeId = $this->excludePurchaseId();
+
+            // ── Transfer-twin exemption (edit only) ──────────────────────
+            // This purchase's own units that are NO LONGER active (sold —
+            // including units transferred to another store, where the
+            // receiving store's twin row IS active with the same IMEI) can
+            // never collide with this edit: the row guards keep them locked
+            // and sold, nothing reactivates them. Their recorded identifiers
+            // are therefore exempt from the conflict check — flagging the
+            // twin made the whole purchase uneditable the moment any item
+            // on it was transferred out. (A genuinely conflicting insert is
+            // still caught downstream by the DB unique index, which the
+            // service translates to the same 422.)
+            $exempt = ['imei1' => [], 'imei2' => [], 'serial_number' => []];
+            if ($excludeId) {
+                $ownInactive = DB::table('stock_units')
+                    ->where('purchase_order_id', $excludeId)
+                    ->whereNotIn('status', ['available', 'reserved'])
+                    ->get(['imei1', 'imei2', 'serial_number']);
+                foreach ($ownInactive as $own) {
+                    foreach (['imei1', 'imei2', 'serial_number'] as $f) {
+                        $val = trim((string) ($own->{$f} ?? ''));
+                        if ($val !== '') {
+                            $exempt[$f][$val] = true;
+                        }
+                    }
+                }
+            }
+
             foreach ($identifiers as $field => $values) {
                 $values = array_values(array_unique($values));
                 if ($values === []) {
                     continue;
                 }
-                $excludeId = $this->excludePurchaseId();
                 $taken = DB::table('stock_units')
                     ->whereIn($columnMap[$field], $values)
                     ->whereIn('status', ['available', 'reserved'])
@@ -239,6 +267,9 @@ class StorePurchaseRequest extends FormRequest
                     ->pluck($columnMap[$field])
                     ->all();
                 foreach ($taken as $dup) {
+                    if (isset($exempt[$field][$dup])) {
+                        continue;
+                    }
                     $v->errors()->add('lines', "Identifier '{$dup}' ({$field}) is already in active stock.");
                 }
             }

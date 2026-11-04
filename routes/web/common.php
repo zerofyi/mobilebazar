@@ -209,6 +209,11 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::get('/create', [StockTransferController::class, 'create'])->name('create')->middleware('can:transfers.create');
         Route::post('/', [StockTransferController::class, 'store'])->name('store')->middleware('can:transfers.create');
         Route::get('/{transfer}', [StockTransferController::class, 'show'])->name('show')->middleware('can:transfers.view');
+        // Edit re-posts both halves atomically (StockTransferService::updateTransfer).
+        // Gated on transfers.create — no separate transfers.edit permission
+        // exists in the manual grant set, and the same staff edit as create.
+        Route::get('/{transfer}/edit', [StockTransferController::class, 'edit'])->name('edit')->middleware('can:transfers.create');
+        Route::put('/{transfer}', [StockTransferController::class, 'update'])->name('update')->middleware('can:transfers.create');
     });
 
     // ── Credit notes (sales returns) ──

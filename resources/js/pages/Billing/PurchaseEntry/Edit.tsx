@@ -272,7 +272,12 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
                     seen.add(k);
                 }
             }
-            if (r.selling > 0 && r.selling < r.cost) list.push(`${label}: selling price is below cost.`);
+            // Locked rows (sold unit / partially-sold batch) are read-only
+            // echoes of the posted document — their reconstructed prices
+            // must never block an edit of the intact rows.
+            const rowLocked = (r.unit_status != null && r.unit_status !== "available")
+                || (r.stock_batch_id != null && r.batch_received_qty != null && r.batch_remaining_qty != null && r.batch_remaining_qty < r.batch_received_qty);
+            if (!rowLocked && r.selling > 0 && r.selling < r.cost) list.push(`${label}: selling price is below cost.`);
         });
 
         if (state.markAsPaid) {
