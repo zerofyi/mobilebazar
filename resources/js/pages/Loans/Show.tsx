@@ -6,7 +6,7 @@ import {
     ReceiptText, ArrowLeft, Printer, Upload, FileText, AlertTriangle,
     CheckCircle2, Clock, Wallet, Banknote, TrendingUp, User, Landmark,
     Phone, CreditCard, Users, CalendarClock, Eye, Loader2, ChevronDown,
-    HandCoins, Scale, MapPin, ShieldCheck, ExternalLink,
+    HandCoins, Scale, MapPin, ShieldCheck, ExternalLink, Pencil, Trash2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -305,6 +305,9 @@ export default function Show({ loan }: Props) {
     const [dossierOpen, setDossierOpen] = useState(false);
     const [visitOpen, setVisitOpen] = useState(false);
     const [kycOpen, setKycOpen] = useState(false);
+    const [deleteOpen, setDeleteOpen] = useState(false);
+    const [deletePin, setDeletePin] = useState<string[]>(['', '', '', '']);
+    const pinRefs = React.useRef<Array<HTMLInputElement | null>>([]);
 
     const settleForm = useForm({ payment_mode: 'cash', notes: '' });
     const termsForm = useForm({ terms_and_conditions: loan.agreement?.terms_and_conditions ?? '' });
@@ -315,6 +318,13 @@ export default function Show({ loan }: Props) {
         document_number: '',
         document: null,
     });
+    const deleteForm = useForm({ delete_pin: '' });
+
+    // Pristine loans only: active, zero repayments, agreement unsigned.
+    const isMutable =
+        loan.status === 'active' &&
+        (loan.repayments ?? []).length === 0 &&
+        !loan.agreement?.signed_at;
 
     const overdueSchedules = useMemo(() => loan.schedules.filter(isOverdueRow), [loan.schedules]);
     const overdueAmount = useMemo(
@@ -336,8 +346,56 @@ export default function Show({ loan }: Props) {
     };
 
     const handleMarkDefault = () => {
-        router.post(app.loans['mark-default'].url(loan.uuid), {}, {
+        router.post(app.loans.markDefault.url(loan.uuid), {}, {
             onSuccess: () => setDefaultOpen(false),
+        });
+    };
+
+    // ── Delete (4-digit PIN) ─────────────────────────────────────────────
+
+    const resetDeleteDialog = () => {
+        setDeleteOpen(false);
+        setDeletePin(['', '', '', '']);
+        deleteForm.reset();
+        deleteForm.clearErrors();
+    };
+
+    const handlePinChange = (index: number, value: string) => {
+        const digit = value.replace(/\D/g, '').slice(-1);
+        setDeletePin((prev) => {
+            const next = [...prev];
+            next[index] = digit;
+            return next;
+        });
+        deleteForm.clearErrors('delete_pin');
+        if (digit && index < 3) {
+            pinRefs.current[index + 1]?.focus();
+        }
+    };
+
+    const handlePinKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Backspace' && !deletePin[index] && index > 0) {
+            pinRefs.current[index - 1]?.focus();
+        }
+    };
+
+    const handlePinPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+        const digits = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 4).split('');
+        if (digits.length === 0) return;
+        e.preventDefault();
+        setDeletePin((prev) => prev.map((_, i) => digits[i] ?? ''));
+        deleteForm.clearErrors('delete_pin');
+        pinRefs.current[Math.min(digits.length, 3)]?.focus();
+    };
+
+    const handleDelete = (e: React.FormEvent) => {
+        e.preventDefault();
+        const code = deletePin.join('');
+        if (code.length !== 4 || deleteForm.processing) return;
+        deleteForm.transform(() => ({ delete_pin: code }));
+        deleteForm.delete(app.loans.destroy.url(loan.uuid), {
+            onSuccess: () => resetDeleteDialog(),
+            onError: () => setDeletePin(['', '', '', '']),
         });
     };
 
@@ -456,6 +514,22 @@ export default function Show({ loan }: Props) {
                                 </Button>
                                 <Button variant="destructive" size="sm" onClick={() => setDefaultOpen(true)}>
                                     <Scale className="mr-1.5 size-3.5" /> Mark Default
+                                </Button>
+                            </>
+                        )}
+                        {isMutable && (
+                            <>
+                                <Button variant="outline" size="sm" asChild>
+                                    <Link href={app.loans.edit.url(loan.uuid)}>
+                                        <Pencil className="mr-1.5 size-3.5" /> Edit
+                                    </Link>
+                                </Button>
+                                <Button
+                                    variant="outline" size="sm"
+                                    className="text-destructive hover:text-destructive"
+                                    onClick={() => setDeleteOpen(true)}
+                                >
+                                    <Trash2 className="mr-1.5 size-3.5" /> Delete
                                 </Button>
                             </>
                         )}
@@ -969,6 +1043,70 @@ export default function Show({ loan }: Props) {
                             Mark Defaulted
                         </Button>
                     </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Delete loan dialog (4-digit PIN) */}
+            <Dialog open={deleteOpen} onOpenChange={(open) => { if (!open) resetDeleteDialog(); else setDeleteOpen(true); }}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-destructive">
+                            <Trash2 className="size-5" /> Delete Loan {loan.loan_number}
+                        </DialogTitle>
+                        <DialogDescription className="text-xs">
+                            This permanently deletes the loan, reverses its disbursal journal and summary,
+                            and removes its schedule, KYC snapshots and agreement. The financed invoice is
+                            not touched. This cannot be undone.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleDelete} className="space-y-4">
+                        <div className="space-y-2">
+                            <Label className="text-xs font-semibold">
+                                Enter the 4-digit delete PIN <span className="text-destructive">*</span>
+                            </Label>
+                            <div className="flex justify-center gap-3" onPaste={handlePinPaste}>
+                                {deletePin.map((digit, i) => (
+                                    <Input
+                                        key={i}
+                                        ref={(el) => { pinRefs.current[i] = el; }}
+                                        type="password"
+                                        inputMode="numeric"
+                                        autoComplete="one-time-code"
+                                        maxLength={1}
+                                        value={digit}
+                                        onChange={(e) => handlePinChange(i, e.target.value)}
+                                        onKeyDown={(e) => handlePinKeyDown(i, e)}
+                                        className="h-14 w-12 text-center text-2xl font-bold tracking-widest"
+                                        aria-label={`PIN digit ${i + 1}`}
+                                    />
+                                ))}
+                            </div>
+                            {deleteForm.errors.delete_pin ? (
+                                <p className="text-center text-xs font-medium text-destructive">
+                                    {deleteForm.errors.delete_pin}
+                                </p>
+                            ) : (
+                                <p className="text-center text-[11px] text-muted-foreground">
+                                    Ask your administrator for the PIN — it is stored server-side only.
+                                </p>
+                            )}
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" size="sm" onClick={resetDeleteDialog}>
+                                Cancel
+                            </Button>
+                            <Button
+                                type="submit" variant="destructive" size="sm"
+                                disabled={deletePin.join('').length !== 4 || deleteForm.processing}
+                            >
+                                {deleteForm.processing ? (
+                                    <><Loader2 className="mr-1.5 size-3.5 animate-spin" /> Deleting…</>
+                                ) : (
+                                    'Delete Loan Permanently'
+                                )}
+                            </Button>
+                        </DialogFooter>
+                    </form>
                 </DialogContent>
             </Dialog>
 

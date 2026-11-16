@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreLoanRequest;
+use App\Http\Requests\UpdateLoanRequest;
 use App\Models\Financer;
 use App\Models\Invoice;
 use App\Models\Loan;
@@ -14,9 +15,11 @@ use App\Services\LoanScheduleService;
 use App\Services\LoanService;
 use App\Services\LoanSettings;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\RedirectResponse;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /**
  * Loan section (Inertia pages live under resources/js/pages/Loans/).
@@ -24,9 +27,10 @@ use Symfony\Component\HttpFoundation\RedirectResponse;
  * Conventions:
  *  - the store is always the user's ownedStore; every loan is verified to
  *    belong to it (404 otherwise);
- *  - posted loans are immutable: no edit/update/destroy routes exist;
- *  - corrections to posted financials go through repayments/settlement,
- *    never edits.
+ *  - a loan is editable/deletable only while pristine (active, zero
+ *    repayments, unsigned agreement, unlocked disbursal month) — see
+ *    LoanService::assertMutable;
+ *  - deletion additionally requires the 4-digit LOAN_DELETE_PIN.
  */
 class LoanController extends Controller
 {
@@ -87,7 +91,6 @@ class LoanController extends Controller
                 ->where('store_id', $store->id)
                 ->first();
             abort_if(! $invoice, 404);
-            abort_if((float) $invoice->due_amount <= 0, 422, 'Invoice has no outstanding due.');
             abort_if($this->hasActiveLoan($invoice), 422, 'Invoice already has an active loan.');
         }
 
@@ -133,10 +136,6 @@ class LoanController extends Controller
 
         if (! $invoice) {
             return response()->json(['message' => 'No invoice found for "' . $q . '".'], 404);
-        }
-
-        if ((float) $invoice->due_amount <= 0) {
-            return response()->json(['message' => 'Invoice ' . $invoice->invoice_number . ' has no outstanding due.'], 422);
         }
 
         if ($this->hasActiveLoan($invoice)) {
@@ -303,6 +302,105 @@ class LoanController extends Controller
         return redirect()
             ->route('app.loans.show', $loan)
             ->with('success', 'Loan ' . $loan->loan_number . ' disbursed.');
+    }
+
+    // ── Edit ─────────────────────────────────────────────────────────────
+
+    public function edit(Request $request, Loan $loan): Response|RedirectResponse
+    {
+        $store = $this->ownedStore($request);
+        $loan  = $this->scoped($loan, $store);
+        $loan->loadMissing(['agreement', 'invoice']);
+
+        try {
+            $this->loans->assertMutable($loan, $store);
+        } catch (UnprocessableEntityHttpException $e) {
+            return redirect()
+                ->route('app.loans.show', $loan)
+                ->with('error', $e->getMessage());
+        }
+
+        $slab     = LoanSettings::collectionSlab($store->id);
+        $slabDays = $this->slabDays($slab);
+
+        // This loan's own KYC snapshots, latest per document type.
+        $kycAssets = [];
+        foreach ($loan->kycDocuments()->with('asset')->orderByDesc('id')->get() as $doc) {
+            if ($doc->asset?->url) {
+                $kycAssets[$doc->document_type] ??= $doc->asset->url;
+            }
+        }
+
+        return Inertia::render('Loans/Edit', [
+            'loan' => [
+                'uuid'              => $loan->uuid,
+                'loan_number'       => $loan->loan_number,
+                'financer_id'       => $loan->financer_id,
+                'principal_amount'  => (float) $loan->principal_amount,
+                'tenure_months'     => (int) $loan->tenure_months,
+                'file_charge_mode'  => $loan->file_charge_mode,
+                'collection_slab'   => $loan->collection_slab,
+                'disbursed_date'    => $loan->disbursed_date?->toDateString(),
+                'first_emi_date'    => $loan->first_emi_date?->toDateString(),
+                'assigned_agent_id' => $loan->assigned_agent_id,
+                'notes'             => $loan->notes,
+            ],
+            'invoice'    => $this->invoicePayload($loan->invoice),
+            'kyc_assets' => $kycAssets,
+            'defaults'   => [
+                'interest_rate'    => LoanSettings::interestRate($store->id),
+                'collection_slab'  => $slab,
+                'processing_fee'   => LoanSettings::processingFee($store->id),
+                'prefix'           => LoanSettings::prefix($store->id),
+                'allowed_emi_days' => $slabDays,
+                'primary_emi_day'  => $slabDays[0] ?? 1,
+            ],
+            'financers' => Financer::query()
+                ->where('store_id', $store->id)
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get(['id', 'name', 'type']),
+        ]);
+    }
+
+    public function update(UpdateLoanRequest $request, Loan $loan): RedirectResponse
+    {
+        $store = $this->ownedStore($request);
+        $loan  = $this->scoped($loan, $store);
+
+        $loan = $this->loans->updateLoan($store, $request->user(), $loan, $request->validated());
+
+        return redirect()
+            ->route('app.loans.show', $loan)
+            ->with('success', 'Loan ' . $loan->loan_number . ' updated.');
+    }
+
+    // ── Delete (4-digit PIN) ─────────────────────────────────────────────
+
+    public function destroy(Request $request, Loan $loan): RedirectResponse
+    {
+        $store = $this->ownedStore($request);
+        $loan  = $this->scoped($loan, $store);
+
+        $request->validate([
+            'delete_pin' => ['required', 'string', 'size:4'],
+        ]);
+
+        // Fail closed: when no PIN is configured every attempt is rejected,
+        // and the message never reveals whether one is set.
+        $expected = (string) config('loans.delete_pin', '');
+        if ($expected === '' || ! hash_equals($expected, (string) $request->input('delete_pin'))) {
+            throw ValidationException::withMessages([
+                'delete_pin' => 'Incorrect delete PIN.',
+            ]);
+        }
+
+        $loanNumber = $loan->loan_number;
+        $this->loans->deleteLoan($store, $request->user(), $loan);
+
+        return redirect()
+            ->route('app.loans.index')
+            ->with('success', 'Loan ' . $loanNumber . ' deleted.');
     }
 
     // ── Detail ───────────────────────────────────────────────────────────

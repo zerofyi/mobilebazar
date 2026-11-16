@@ -262,8 +262,10 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         Route::post('/{loan}/upload-agreement', [LoanController::class, 'upload'])->name('agreement.upload');
         Route::post('/{loan}/visits', [LoanController::class, 'logVisit'])->name('visits.store');
         Route::post('/{loan}/kyc', [LoanController::class, 'uploadKyc'])->name('kyc.upload');
-        // NOTE: loans.edit/update/destroy routes removed — LoanController has no
-        // edit/update/destroy methods. Re-add when the backend is implemented.
+        Route::get('/{loan}/edit', [LoanController::class, 'edit'])->name('edit');
+        Route::put('/{loan}', [LoanController::class, 'update'])->name('update');
+        // Delete is PIN-gated: 5 attempts/minute makes a 4-digit PIN unbruteforceable.
+        Route::delete('/{loan}', [LoanController::class, 'destroy'])->name('destroy')->middleware('throttle:5,1');
 
         // 3. Detail
         Route::get('/{loan}', [LoanController::class, 'show'])->name('show');

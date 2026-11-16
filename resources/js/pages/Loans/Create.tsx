@@ -247,7 +247,7 @@ function invoicePrefill(inv: InvoicePayload): Partial<LoanForm> & { existingAsse
         borrower_type: !party ? '' : party.kind === 'supplier' ? SUPPLIER_FQCN : CUSTOMER_FQCN,
         borrower_id: party ? String(party.id) : '',
         invoice_id: String(inv.id),
-        principal_amount: String(inv.due_amount),
+        principal_amount: String(inv.due_amount > 0 ? inv.due_amount : inv.grand_total),
         down_payment: '0',
         first_emi_date: '',
         customer: {
@@ -940,10 +940,10 @@ export default function Create({ invoice, defaults, financers = [] }: Props) {
 
     // ── Card 3 — Device & Invoice (read-only from the invoice) ──
 
-    const inv = activeInvoice as InvoicePayload;
-    const invoiceDateLabel = inv.invoice_date ? format(parseLocalDate(inv.invoice_date), 'dd MMM yyyy') : '—';
+    const inv = activeInvoice;
+    const invoiceDateLabel = inv?.invoice_date ? format(parseLocalDate(inv.invoice_date), 'dd MMM yyyy') : '—';
 
-    const deviceCard = (
+    const deviceCard = !inv ? null : (
         <Card className="shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between border-b border-border/50 pb-4">
                 <CardTitle className="flex items-center gap-2 text-lg">
@@ -1386,7 +1386,7 @@ export default function Create({ invoice, defaults, financers = [] }: Props) {
                                         This invoice has no customer or supplier linked — a loan needs a borrower.
                                     </p>
                                     <p className="text-xs text-muted-foreground">
-                                        Invoice {inv.invoice_number} cannot be financed until a borrower is attached to it.
+                                        Invoice {activeInvoice?.invoice_number} cannot be financed until a borrower is attached to it.
                                     </p>
                                 </div>
                             </div>
@@ -1406,7 +1406,10 @@ export default function Create({ invoice, defaults, financers = [] }: Props) {
                             <Button type="button" variant="outline" onClick={() => window.history.back()} disabled={processing}>
                                 Cancel
                             </Button>
-                            <Button type="submit" size="lg" disabled={!canSubmit}>
+                            {/* <Button type="submit" size="lg" disabled={!canSubmit}>
+                                {processing ? 'Disbursing…' : 'Disburse Loan Agreement'}
+                            </Button> */}
+                            <Button type="submit" size="lg" disabled>
                                 {processing ? 'Disbursing…' : 'Disburse Loan Agreement'}
                             </Button>
                         </div>

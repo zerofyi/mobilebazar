@@ -17,11 +17,13 @@ use Illuminate\Validation\Rule;
  *  - Every loan has a REAL borrower: borrower_type (Customer|Supplier FQCN)
  *    + borrower_id. No walk-ins.
  *  - invoice_id is required: the loan finances a posted invoice. The invoice
- *    must belong to the user's store, have due_amount > 0, and carry no other
- *    ACTIVE loan (one active loan per invoice — decision B). The invoice
+ *    must belong to the user's store and carry no other ACTIVE loan (one
+ *    active loan per invoice — decision B). Any payment status is fine: an
+ *    invoice does NOT need an outstanding due to be financed. The invoice
  *    itself is never mutated by loan creation (decision D).
- *  - principal_amount defaults to the invoice due on the frontend and is
- *    editable here; down_payment must not exceed it.
+ *  - principal_amount defaults on the frontend to the invoice due (or the
+ *    grand total when nothing is due), is capped at the invoice total, and
+ *    down_payment must not exceed it.
  *  - interest_rate is a MONTHLY percent (flat interest, D1), 0–48.
  *  - tenure_months 1–84 (E cap), processing_fee ≥ 0,
  *    file_charge_mode upfront|spread (D2).
@@ -38,8 +40,8 @@ class StoreLoanRequest extends FormRequest
 
     public function rules(): array
     {
-        $isCustomer = $this->input('borrower_type') === Customer::class;
-        $borrowerId = $this->input('borrower_id');
+        $isCustomer = $this->isCustomerBorrower();
+        $borrowerId = $this->borrowerIdForUnique();
 
         return [
             // ── Borrower (polymorphic party) ───────────────────────────────
@@ -125,16 +127,10 @@ class StoreLoanRequest extends FormRequest
                     $invoice = DB::table('invoices')
                         ->where('id', $value)
                         ->where('store_id', $storeId)
-                        ->first(['due_amount']);
+                        ->first(['id']);
 
                     if (! $invoice) {
                         $fail('The selected invoice is invalid.');
-
-                        return;
-                    }
-
-                    if ((float) $invoice->due_amount <= 0) {
-                        $fail('The invoice has no outstanding due to finance.');
                     }
                 },
             ],
@@ -164,8 +160,8 @@ class StoreLoanRequest extends FormRequest
                     $invoiceId = $this->input('invoice_id');
                     if ($invoiceId) {
                         $invoice = \App\Models\Invoice::find($invoiceId);
-                        if ($invoice && (float) $value > (float) $invoice->due_amount + 0.01) {
-                            $fail('The principal amount cannot exceed the invoice due amount (₹' . number_format((float) $invoice->due_amount, 2) . ').');
+                        if ($invoice && (float) $value > (float) $invoice->grand_total + 0.01) {
+                            $fail('The principal amount cannot exceed the invoice total (₹' . number_format((float) $invoice->grand_total, 2) . ').');
                         }
                     }
                 },
@@ -194,6 +190,20 @@ class StoreLoanRequest extends FormRequest
             'guarantors.*.aadhaar_number' => ['nullable', 'string', 'max:20'],
             'guarantors.*.pan_number'  => ['nullable', 'string', 'max:20'],
         ];
+    }
+
+    /**
+     * Overridable for update flows where the borrower is locked to the
+     * existing loan (UpdateLoanRequest reads it from the route model).
+     */
+    protected function isCustomerBorrower(): bool
+    {
+        return $this->input('borrower_type') === Customer::class;
+    }
+
+    protected function borrowerIdForUnique(): mixed
+    {
+        return $this->input('borrower_id');
     }
 
     /**

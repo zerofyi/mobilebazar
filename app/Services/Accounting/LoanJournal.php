@@ -19,7 +19,9 @@ use App\Services\AccountingService;
  *   1060 Loans Issued (Principal) — asset, the loan book
  *   1030 Accounts Receivable       — asset, relieved at disbursal
  *   1010/1020/1025/1026            — cash/bank/upi/card (same map as SaleJournal)
- *   4030 Loan Interest Income      — income, interest + penalties
+ *   2040 Financer Interest Payable — liability: collected EMI interest is
+ *        the financer's money, owed to them — never store income
+ *   4030 Loan Interest Income      — income, late penalties only
  *   4035 Processing Fee Income     — income, seeded by AccountSeeder
  *
  * Disbursal entry (JE-LN-<loan_number>), all paise-exact. NOTE: the down
@@ -36,7 +38,8 @@ use App\Services\AccountingService;
  * Repayment entry (JE-LR-<receipt_number>):
  *   Dr <cash by payment_mode> = amount
  *   Cr 1060 = principal_component                           [if > 0]
- *   Cr 4030 = interest_component + penalty_collected         [if > 0]
+ *   Cr 2040 = interest_component (owed to the financer)      [if > 0]
+ *   Cr 4030 = penalty_collected (store's own income)         [if > 0]
  *
  * Both post() calls are idempotent on (store_id, entry_number) via
  * AccountingService — safe replays never duplicate ledger rows.
@@ -45,7 +48,8 @@ final class LoanJournal
 {
     private const LOAN_BOOK_ACCOUNT      = '1060';
     private const RECEIVABLE_ACCOUNT     = '1030';
-    private const INTEREST_INCOME_ACCOUNT = '4030';
+    private const FINANCER_INTEREST_ACCOUNT = '2040';
+    private const PENALTY_INCOME_ACCOUNT = '4030';
     private const FEE_INCOME_ACCOUNT     = '4035';
 
     private const PAYMENT_ACCOUNTS = [
@@ -66,8 +70,10 @@ final class LoanJournal
     /**
      * @param array{principal_amount:float, down_payment_mode:string,
      *   processing_fee:float, file_charge_mode:string} $computed
+     * @param string $entrySuffix appended to the entry number (e.g. '-E…'
+     *   when re-posting after a loan edit — entry numbers are unique per store)
      */
-    public function postDisbursal(Loan $loan, Store $store, User $user, array $computed): void
+    public function postDisbursal(Loan $loan, Store $store, User $user, array $computed, string $entrySuffix = ''): void
     {
         $financed = JournalEntryData::toPaise($computed['principal_amount']);
         $fee      = JournalEntryData::toPaise($computed['processing_fee']);
@@ -110,7 +116,7 @@ final class LoanJournal
 
         $this->accounting->post(new JournalEntryData(
             storeId:       $store->id,
-            entryNumber:   'JE-LN-' . $loan->loan_number,
+            entryNumber:   'JE-LN-' . $loan->loan_number . $entrySuffix,
             entryDate:     (string) $loan->disbursed_date,
             referenceType: Loan::class,
             referenceId:   (int) $loan->id,
@@ -124,8 +130,8 @@ final class LoanJournal
     {
         $amount    = JournalEntryData::toPaise($repayment->amount);
         $principal = JournalEntryData::toPaise($repayment->principal_component);
-        $interest  = JournalEntryData::toPaise($repayment->interest_component)
-                   + JournalEntryData::toPaise($repayment->penalty_collected);
+        $interest  = JournalEntryData::toPaise($repayment->interest_component);
+        $penalty   = JournalEntryData::toPaise($repayment->penalty_collected);
 
         $mode    = strtolower((string) $repayment->payment_mode);
         $payCode = self::PAYMENT_ACCOUNTS[$mode] ?? '1020';
@@ -145,21 +151,26 @@ final class LoanJournal
         }
 
         if ($interest > 0) {
-            $memo = 'EMI interest income — ' . $loan->loan_number;
-            if ((float) $repayment->penalty_collected > 0) {
-                $memo .= ' (incl. penalty)';
-            }
+            // Interest belongs to the financer: a payable, not income.
             $lines[] = [
-                'account' => self::INTEREST_INCOME_ACCOUNT,
+                'account' => self::FINANCER_INTEREST_ACCOUNT,
                 'credit'  => $this->money($interest),
-                'memo'    => $memo,
+                'memo'    => 'EMI interest payable to financer — ' . $loan->loan_number,
+            ];
+        }
+
+        if ($penalty > 0) {
+            $lines[] = [
+                'account' => self::PENALTY_INCOME_ACCOUNT,
+                'credit'  => $this->money($penalty),
+                'memo'    => 'EMI penalty income — ' . $loan->loan_number,
             ];
         }
 
         $this->accounting->post(new JournalEntryData(
             storeId:       $store->id,
             entryNumber:   'JE-LR-' . $repayment->receipt_number,
-            entryDate:     $store->businessToday(),
+            entryDate:     $repayment->paid_at ?? now(),
             referenceType: LoanRepayment::class,
             referenceId:   (int) $repayment->id,
             narration:     'EMI collection ' . $repayment->receipt_number,

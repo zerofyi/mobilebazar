@@ -29,6 +29,7 @@ class AccountSeeder extends Seeder
             // --- LIABILITIES (2000 series) ---
             ['code' => '2010', 'name' => 'Accounts Payable',           'type' => 'liability'],
             ['code' => '2020', 'name' => 'Output Tax Payable (GST)',   'type' => 'liability'],
+            ['code' => '2040', 'name' => 'Financer Interest Payable',  'type' => 'liability'],
 
             // --- EQUITY (3000 series) ---
             ['code' => '3010', 'name' => 'Owner / Retained Earnings',  'type' => 'equity'],

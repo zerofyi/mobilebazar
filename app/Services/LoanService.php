@@ -9,6 +9,7 @@ use App\Models\Agreement;
 use App\Models\Customer;
 use App\Models\Guarantor;
 use App\Models\Invoice;
+use App\Models\JournalEntry;
 use App\Models\Loan;
 use App\Models\LoanRepayment;
 use App\Models\LoanSchedule;
@@ -41,6 +42,7 @@ final class LoanService
     public function __construct(
         private readonly LoanJournal $journal,
         private readonly SummaryService $summaries,
+        private readonly AccountingService $accounting,
     ) {}
 
     /*
@@ -61,10 +63,6 @@ final class LoanService
                 ->where('store_id', $store->id)
                 ->lockForUpdate()
                 ->firstOrFail();
-
-            if ((float) $invoice->due_amount <= 0) {
-                throw new UnprocessableEntityHttpException('The invoice has no outstanding due to finance.');
-            }
 
             // Replay-safe: a retried request returns the existing active loan.
             $existing = Loan::query()
@@ -221,6 +219,367 @@ final class LoanService
 
     /*
     |----------------------------------------------------------------------
+    | Edit & delete (mutable only before any money moves)
+    |----------------------------------------------------------------------
+    */
+
+    /**
+     * A loan is editable/deletable only while it is pristine: active,
+     * zero repayments (a down payment IS a repayment), agreement unsigned,
+     * and disbursed in an unlocked month.
+     *
+     * @throws UnprocessableEntityHttpException when the loan has moved money.
+     */
+    public function assertMutable(Loan $loan, Store $store): void
+    {
+        if ($loan->status !== Loan::STATUS_ACTIVE) {
+            throw new UnprocessableEntityHttpException(
+                'Only active loans can be edited or deleted.'
+            );
+        }
+
+        if ($loan->repayments()->exists()) {
+            throw new UnprocessableEntityHttpException(
+                'This loan already has collections recorded and cannot be edited or deleted.'
+            );
+        }
+
+        if ($loan->agreement && $loan->agreement->signed_at) {
+            throw new UnprocessableEntityHttpException(
+                'This loan has a signed agreement and cannot be edited or deleted.'
+            );
+        }
+
+        $month = substr((string) $loan->disbursed_date, 0, 7);
+        if ($this->summaries->isMonthLocked($store->id, $month)) {
+            throw new UnprocessableEntityHttpException(
+                "This loan was disbursed in the locked month {$month} and cannot be edited or deleted."
+            );
+        }
+    }
+
+    /**
+     * Edit a pristine loan: reverse the original disbursal posting, apply
+     * the new terms, regenerate the schedule, then re-post.
+     *
+     * The invoice is never touched; the loan number never changes; guarantors
+     * are left as-is; KYC snapshots are append-only (only newly uploaded
+     * files create rows).
+     *
+     * @param array $data validated UpdateLoanRequest payload
+     */
+    public function updateLoan(Store $store, User $user, Loan $loan, array $data): Loan
+    {
+        return DB::transaction(function () use ($store, $user, $loan, $data) {
+            $loan = Loan::query()
+                ->whereKey($loan->id)
+                ->where('store_id', $store->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $loan->loadMissing('agreement');
+
+            $this->assertMutable($loan, $store);
+
+            // Borrower profile (identity fields + morph address). The
+            // borrower linkage itself is locked — validated() injected it
+            // from the loan.
+            $borrower = $this->syncBorrowerProfile($data);
+
+            // New schedule math (single source of truth). Down payment is
+            // always 0 here — the gate guarantees no down payment was taken.
+            $calc = LoanScheduleService::forStore($store->id, [
+                'principal'        => (float) $data['principal_amount'],
+                'down_payment'     => 0.0,
+                'interest_rate'    => $data['interest_rate'] ?? null,
+                'tenure_months'    => (int) $data['tenure_months'],
+                'processing_fee'   => $data['processing_fee'] ?? null,
+                'file_charge_mode' => $data['file_charge_mode'],
+                'disbursed_date'   => $data['disbursed_date'],
+                'first_emi_date'   => $data['first_emi_date'] ?? null,
+                'collection_slab'  => $data['collection_slab'] ?? null,
+            ]);
+
+            $disbursedDate = $data['disbursed_date'];
+
+            // Reverse the ORIGINAL disbursal posting (journal + summary).
+            // The re-post below reuses the original fee bucket.
+            $feeMode = $this->reverseDisbursal($loan, $store, $user, 'Loan edited ' . $loan->loan_number);
+
+            // Update the loan row. paid_amount stays 0 — no money has moved.
+            $loan->update([
+                'financer_id'      => $data['financer_id'],
+                'principal_amount' => $calc['principal'],
+                'down_payment'     => 0.00,
+                'interest_rate'    => $calc['monthly_rate'],
+                'processing_fee'   => $calc['processing_fee'],
+                'file_charge_mode' => $calc['file_charge_mode'],
+                'total_interest'   => $calc['total_interest'],
+                'total_payable'    => $calc['total_payable'],
+                'paid_amount'      => 0.00,
+                'balance_amount'   => $calc['total_payable'],
+                'tenure_months'    => (int) $data['tenure_months'],
+                'emi_amount'       => $calc['base_emi'],
+                'collection_slab'  => $data['collection_slab'] ?? LoanSettings::collectionSlab($store->id),
+                'disbursed_date'   => $disbursedDate,
+                'first_emi_date'   => $calc['first_emi_date'],
+                'assigned_agent_id' => $data['assigned_agent_id'] ?? null,
+                'notes'            => $data['notes'] ?? null,
+            ]);
+
+            // Regenerate the schedule.
+            LoanSchedule::query()->where('loan_id', $loan->id)->delete();
+            $this->insertScheduleRows($loan, $calc['schedule']);
+
+            // Refresh the (unsigned) agreement terms to the new figures.
+            if ($loan->agreement) {
+                $loan->agreement->update([
+                    'terms_and_conditions' => self::defaultTerms($loan->refresh()),
+                ]);
+            }
+
+            // New KYC uploads only — existing snapshots are never duplicated.
+            $this->attachNewIdentityAssets($loan, $borrower, $data, $user);
+
+            // Re-post the disbursal journal + summary with the new terms.
+            // The entry number gets a timestamp suffix: entry numbers are
+            // unique per store and the reversed original keeps its number.
+            $spread = $calc['file_charge_mode'] === 'spread';
+            $fee    = $calc['processing_fee'];
+
+            $this->journal->postDisbursal($loan->refresh(), $store, $user, [
+                'principal_amount'  => $calc['principal'],
+                'down_payment_mode' => $feeMode,
+                'processing_fee'    => $fee,
+                'file_charge_mode'  => $calc['file_charge_mode'],
+            ], '-E' . now()->format('YmdHisu'));
+
+            $this->summaries->record(SummaryDeltaFactory::forLoanDisbursal(
+                $store->id,
+                $disbursedDate,
+                $calc['net_principal'] + ($spread ? $fee : 0.0),
+                $spread ? 0.0 : $fee,
+                $feeMode,
+            ));
+
+            return $loan->refresh();
+        }, 3);
+    }
+
+    /**
+     * Delete a pristine loan: reverse its postings, drop its schedule, KYC
+     * snapshots, agreement and guarantors, then the loan row itself.
+     *
+     * Asset ownership: customer assets belong to the CUSTOMER (the KYC rows
+     * only snapshot them) and are kept; supplier uploads are owned by the
+     * KYC document and are deleted with it. The invoice is never touched.
+     */
+    public function deleteLoan(Store $store, User $user, Loan $loan): void
+    {
+        DB::transaction(function () use ($store, $user, $loan) {
+            $loan = Loan::query()
+                ->whereKey($loan->id)
+                ->where('store_id', $store->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $loan->loadMissing(['agreement', 'kycDocuments.asset', 'guarantors']);
+
+            $this->assertMutable($loan, $store);
+
+            // Reverse the disbursal posting (journal + summary).
+            $this->reverseDisbursal($loan, $store, $user, 'Loan deleted ' . $loan->loan_number);
+
+            // Schedule rows.
+            LoanSchedule::query()->where('loan_id', $loan->id)->delete();
+
+            // KYC snapshots. Supplier-owned uploads die with the document;
+            // customer-owned assets stay on the customer profile.
+            foreach ($loan->kycDocuments as $kyc) {
+                foreach ($kyc->assets as $asset) {
+                    $kyc->deleteAsset($asset);
+                }
+                $kyc->delete();
+            }
+
+            // Agreement shell (unsigned — the gate guarantees this).
+            $loan->agreement?->delete();
+
+            // Guarantors.
+            $loan->guarantors()->delete();
+
+            // The loan itself.
+            $loan->delete();
+        }, 3);
+    }
+
+    /**
+     * Reverse the loan's CURRENT disbursal journal entry and its summary
+     * delta. A loan edited twice has a chain of disbursal postings
+     * (JE-LN-X, JE-LN-X-E…, …) — this finds the latest one that has not
+     * been reversed yet. The summary reversal mirrors the original posting
+     * exactly: the fee bucket is derived from the original journal's fee
+     * line so the negated delta lands in the same cash/upi/card/bank bucket.
+     *
+     * @return string the payment mode the original fee was booked to, so a
+     *   re-post can reuse the same bucket.
+     */
+    private function reverseDisbursal(Loan $loan, Store $store, User $user, string $reason): string
+    {
+        $entry = $this->currentDisbursalEntry($loan, $store);
+
+        $feeMode = 'cash';
+        if ($entry) {
+            $feeMode = $this->disbursalFeeMode($entry);
+            $this->accounting->reverse($entry, $user->id, $reason);
+        }
+
+        $spread = $loan->file_charge_mode === 'spread';
+        $fee    = (float) $loan->processing_fee;
+
+        $original = SummaryDeltaFactory::forLoanDisbursal(
+            $store->id,
+            (string) $loan->disbursed_date,
+            (float) $loan->principal_amount - (float) $loan->down_payment + ($spread ? $fee : 0.0),
+            $spread ? 0.0 : $fee,
+            $feeMode,
+        );
+
+        $this->summaries->record($original->reversed());
+
+        return $feeMode;
+    }
+
+    /**
+     * The latest disbursal posting for the loan that has no reversal yet.
+     * Repayment journals use the JE-LR- prefix and never match.
+     */
+    private function currentDisbursalEntry(Loan $loan, Store $store): ?JournalEntry
+    {
+        $reversed = JournalEntry::query()
+            ->where('store_id', $store->id)
+            ->where('reference_type', Loan::class)
+            ->where('reference_id', $loan->id)
+            ->where('entry_number', 'like', 'REV-JE-LN-%')
+            ->pluck('entry_number')
+            ->map(fn (string $n) => substr($n, 4)) // strip the REV- prefix
+            ->all();
+
+        return JournalEntry::query()
+            ->where('store_id', $store->id)
+            ->where('reference_type', Loan::class)
+            ->where('reference_id', $loan->id)
+            ->where('entry_number', 'like', 'JE-LN-%')
+            ->whereNotIn('entry_number', $reversed)
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    /**
+     * Which payment mode the original disbursal fee was booked to, read off
+     * the journal's fee line. Maps back to the summary bucket categories.
+     */
+    private function disbursalFeeMode(JournalEntry $entry): string
+    {
+        $entry->loadMissing('lines.account');
+
+        $line = $entry->lines->first(
+            fn ($l) => str_starts_with((string) ($l->memo ?? ''), 'Processing fee collected')
+        );
+
+        if (! $line || ! $line->account) {
+            return 'cash';
+        }
+
+        return match ($line->account->code) {
+            '1010'  => 'cash',
+            '1025'  => 'upi',
+            '1026'  => 'card',
+            default => 'bank',
+        };
+    }
+
+    /**
+     * Bulk-insert schedule rows for a loan (shared by create and update).
+     *
+     * @param array<int, array{installment_no:int, due_date:string, principal_amount:float, interest_amount:float, total_due:float}> $schedule
+     */
+    private function insertScheduleRows(Loan $loan, array $schedule): void
+    {
+        $now  = now();
+        $rows = [];
+        foreach ($schedule as $inst) {
+            $rows[] = [
+                'uuid'             => (string) Str::uuid(),
+                'loan_id'          => $loan->id,
+                'installment_no'   => $inst['installment_no'],
+                'due_date'         => $inst['due_date'],
+                'principal_amount' => $inst['principal_amount'],
+                'interest_amount'  => $inst['interest_amount'],
+                'total_due'        => $inst['total_due'],
+                'paid_amount'      => 0.00,
+                'penalty_amount'   => 0.00,
+                'status'           => 'pending',
+                'created_at'       => $now,
+                'updated_at'       => $now,
+            ];
+        }
+        LoanSchedule::insert($rows);
+    }
+
+    /**
+     * Edit-mode KYC: only NEWLY uploaded files create assets + snapshot
+     * rows. Unchanged slots keep their existing KYC rows — no duplicates.
+     */
+    private function attachNewIdentityAssets(Loan $loan, Model $borrower, array $data, User $user): void
+    {
+        $isCustomer = $borrower instanceof Customer;
+        $numbers    = $isCustomer
+            ? $borrower->only(['aadhaar_number', 'pan_number', 'voter_number'])
+            : [];
+
+        $storeAsset = function (?\Illuminate\Http\UploadedFile $file, string $type, Model $owner, string $slug, string $folder) use ($user): ?Model {
+            if (! $file) {
+                return null;
+            }
+
+            return $owner->uploadAsset($file, $slug, $folder, $type, ['thumb'], uploadedBy: $user->id);
+        };
+
+        if ($isCustomer && ($data['photo'] ?? null)) {
+            $photo = $storeAsset($data['photo'], 'photo', $borrower, 'customer-' . $borrower->getKey(), 'customers');
+            if ($photo) {
+                $loan->kycDocuments()->create([
+                    'document_type' => 'photo',
+                    'asset_id'      => $photo->getKey(),
+                ]);
+            }
+        }
+
+        foreach (self::DOC_SLOTS as $field => $slot) {
+            $file = $data[$field] ?? null;
+            if (! $file) {
+                continue;
+            }
+
+            if ($isCustomer) {
+                $asset = $storeAsset($file, $slot['type'], $borrower, 'customer-' . $borrower->getKey(), 'customers');
+                if (! $asset) {
+                    continue;
+                }
+                $loan->kycDocuments()->create([
+                    'document_type'   => $slot['type'],
+                    'document_number' => $numbers[$slot['number_from']] ?? null,
+                    'asset_id'        => $asset->getKey(),
+                ]);
+            } else {
+                $kyc   = $loan->kycDocuments()->create(['document_type' => $slot['type']]);
+                $asset = $storeAsset($file, $slot['type'], $kyc, 'loan-' . $loan->loan_number, 'loans/kyc');
+                $kyc->update(['asset_id' => $asset?->getKey()]);
+            }
+        }
+    }
+
+    /*
+    |----------------------------------------------------------------------
     | EMI collection
     |----------------------------------------------------------------------
     */
@@ -372,7 +731,9 @@ final class LoanService
     /** The loan borrower must be the invoice's own party. */
     private function assertBorrowerMatchesInvoice(array $data, Invoice $invoice): void
     {
-        $expectedType = $invoice->party_type === 'supplier' ? Supplier::class : Customer::class;
+        // invoices.party_type stores the morph class (FQCN), like everywhere
+        // else in the codebase — never the 'customer'/'supplier' alias.
+        $expectedType = $invoice->party_type === Supplier::class ? Supplier::class : Customer::class;
 
         if ($data['borrower_type'] !== $expectedType || (int) $data['borrower_id'] !== (int) $invoice->party_id) {
             throw new UnprocessableEntityHttpException('The borrower must be the invoice party.');
