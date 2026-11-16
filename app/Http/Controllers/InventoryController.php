@@ -433,6 +433,19 @@ class InventoryController extends Controller
         $detail['own_store'] = ($detail['store']['id'] ?? null) === $store->id
             || $kind === 'variant';
 
+        // Another store's purchase cost is that store's private data: strip
+        // the cost block from the payload entirely, and null the per-sale
+        // profit (price − landed — it would leak the landed cost
+        // arithmetically). Selling/wholesale/MRP stay visible.
+        if (! $detail['own_store']) {
+            $detail['cost'] = null;
+            if (isset($detail['sales'])) {
+                $detail['sales'] = collect($detail['sales'])
+                    ->map(fn (array $s) => [...$s, 'profit' => null])
+                    ->all();
+            }
+        }
+
         return Inertia::render('App/Inventory/Verify', [
             'kind'   => $kind,
             'detail' => $detail,

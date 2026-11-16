@@ -292,6 +292,155 @@ final class StockTransferService
     }
 
     /**
+     * Delete a transfer outright — the "wrong store / sent by mistake"
+     * escape hatch. Reverses BOTH halves completely, in one transaction,
+     * so it is as if the transfer never happened: the mirrored settlement
+     * is voided, the target purchase is deleted (its stock rows removed),
+     * the source sale is deleted (its stock restored to 'available'), and
+     * the bridge row goes last. Journals and summaries keep their audit
+     * trail as REV- mirrors and negated deltas — every balance nets to
+     * zero, not one rupee remains.
+     *
+     * Hard gate — the transfer must be exactly as it was posted:
+     *  - status 'completed', source store only;
+     *  - no credit note on the sale, no debit note on the purchase;
+     *  - every transferred unit still 'available' in the target store and
+     *    every batch untouched (remaining == received);
+     *  - no money moved outside the transfer settlement: no manual
+     *    supplier payments on the purchase, and the invoice's paid amount
+     *    still equals the mirrored settlement to the paise.
+     * The sale/purchase delete services re-run their own gates inside
+     * (loan link, unit states, locked months), so the two stores cannot
+     * desync. PIN authorization happens in the controller, like the
+     * transfer create/edit flows.
+     */
+    public function deleteTransfer(Store $sourceStore, User $user, StockTransfer $transfer): void
+    {
+        DB::transaction(function () use ($sourceStore, $user, $transfer) {
+            $transfer = StockTransfer::where('id', $transfer->id)->lockForUpdate()->firstOrFail();
+            $invoice = Invoice::where('id', $transfer->sale_invoice_id)->lockForUpdate()->firstOrFail();
+            $purchase = PurchaseOrder::where('id', $transfer->purchase_order_id)->lockForUpdate()->firstOrFail();
+
+            if ((int) $transfer->from_store_id !== (int) $sourceStore->id
+                || (int) $invoice->store_id !== (int) $sourceStore->id) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'Only the source store can delete this transfer.',
+                ]);
+            }
+
+            $targetStore = Store::find((int) $transfer->to_store_id);
+            if (! $targetStore) {
+                throw ValidationException::withMessages([
+                    'transfer' => 'The target store of this transfer is missing.',
+                ]);
+            }
+
+            $this->assertTransferDeletable($transfer, $invoice, $purchase, $targetStore);
+
+            // 1. Settlement — void the mirrored supplier payments (journals
+            //    reversed, rows kept 'voided', payment summaries negated).
+            //    After this the purchase carries no transfer money.
+            $this->voidMirroredPayments($targetStore, $user, $purchase, $transfer);
+
+            // 2. Purchase half — deleting it removes the target store's
+            //    stock rows (the twins), which also frees the source
+            //    units' IMEIs in the global active indexes for step 3.
+            $this->purchases->deletePurchase($targetStore, $user, $purchase, viaTransfer: true);
+
+            // 3. Sale half — restores the source units to 'available' and
+            //    removes the invoice.
+            $this->sales->deleteSale($sourceStore, $user, $invoice, viaTransfer: true);
+
+            // 4. The bridge.
+            $transfer->delete();
+
+            Log::info('Stock transfer deleted (fully reverted)', [
+                'transfer_number' => $transfer->transfer_number,
+                'from_store_id'   => $sourceStore->id,
+                'to_store_id'     => $targetStore->id,
+                'invoice_id'      => $invoice->id,
+                'purchase_id'     => $purchase->id,
+                'user_id'         => $user->id,
+            ]);
+        });
+    }
+
+    /**
+     * Pre-flight gates for a transfer delete (see deleteTransfer docblock).
+     *
+     * @throws ValidationException
+     */
+    private function assertTransferDeletable(StockTransfer $transfer, Invoice $invoice, PurchaseOrder $purchase, Store $targetStore): void
+    {
+        $fail = fn (string $field, string $msg) => throw ValidationException::withMessages([$field => $msg]);
+
+        if ($transfer->status !== 'completed') {
+            $fail('transfer', 'Only a completed transfer can be deleted.');
+        }
+
+        if (CreditNote::where('invoice_id', $invoice->id)->where('status', 'issued')->exists()) {
+            $fail('transfer', "Transfer {$transfer->transfer_number} is final: a credit note has been issued against its sale.");
+        }
+        if (DebitNote::where('purchase_order_id', $purchase->id)->where('status', 'issued')->exists()) {
+            $fail('transfer', "Transfer {$transfer->transfer_number} is final: a debit note has been issued against its purchase.");
+        }
+
+        // ── Stock intact in the target store ────────────────────────────
+        $purchase->loadMissing(['items.stockUnits', 'items.stockBatches']);
+        foreach ($purchase->items as $poItem) {
+            foreach ($poItem->stockUnits as $unit) {
+                if ($unit->status !== 'available' || (int) $unit->store_id !== (int) $targetStore->id) {
+                    $fail('transfer', "This transfer cannot be deleted: {$poItem->manual_item_name} (IMEI "
+                        . ($unit->imei1 ?? $unit->serial_number ?? "#{$unit->id}")
+                        . ") has already been sold or moved in {$targetStore->name}. "
+                        . 'Delete is only possible while every transferred item is untouched.');
+                }
+            }
+            foreach ($poItem->stockBatches as $batch) {
+                if ((int) $batch->remaining_qty !== (int) $batch->received_qty) {
+                    $fail('transfer', "This transfer cannot be deleted: batch {$batch->batch_number} "
+                        . "({$poItem->manual_item_name}) has already been sold from in {$targetStore->name}. "
+                        . 'Delete is only possible while every transferred item is untouched.');
+                }
+            }
+        }
+
+        // ── Money intact: nothing settled outside the transfer mirror ───
+        // The mirrored settlement total = the unreversed JE-SUPPAY journals
+        // whose narration carries this transfer number (same identification
+        // voidMirroredPayments uses).
+        $mirroredTotal = $this->r2((float) JournalEntry::query()
+            ->where('store_id', $targetStore->id)
+            ->where('reference_type', PurchaseOrder::class)
+            ->where('reference_id', $purchase->id)
+            ->where('entry_number', 'like', 'JE-SUPPAY-%')
+            ->where('narration', 'like', '%' . $transfer->transfer_number . '%')
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('journal_entries as rev')
+                    ->whereColumn('rev.reverses_journal_id', 'journal_entries.id');
+            })
+            ->with('lines.account')
+            ->get()
+            ->sum(fn ($e) => $e->lines
+                ->filter(fn ($l) => ($l->account?->code ?? null) === '2010')
+                ->sum(fn ($l) => (float) $l->debit)));
+
+        $completedPaid = $this->r2((float) Payment::query()
+            ->where('payable_type', PurchaseOrder::class)
+            ->where('payable_id', $purchase->id)
+            ->where('status', 'completed')
+            ->sum('amount'));
+
+        if ($completedPaid - $mirroredTotal > 0.005) {
+            $fail('transfer', "This transfer cannot be deleted: money was paid separately against the purchase in {$targetStore->name}. Reverse that payment first.");
+        }
+        if (abs($this->r2((float) $invoice->paid_amount) - $mirroredTotal) > 0.005) {
+            $fail('transfer', 'This transfer cannot be deleted: payments were collected against its sale after the transfer was made. Reverse those collections first.');
+        }
+    }
+
+    /**
      * Pre-flight gates for a transfer edit (see updateTransfer docblock).
      *
      * @throws ValidationException

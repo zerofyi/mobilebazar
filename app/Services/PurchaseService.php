@@ -940,10 +940,12 @@ final class PurchaseService
         }
     }
 
-    public function deletePurchase(Store $store, User $user, PurchaseOrder $po): void
+    public function deletePurchase(Store $store, User $user, PurchaseOrder $po, bool $viaTransfer = false): void
     {
-        // Transfer bridge guard — see updatePurchase.
-        if (StockTransfer::where('purchase_order_id', $po->id)->exists()) {
+        // Transfer bridge guard — see updatePurchase. The ONLY exception is
+        // the transfer delete flow itself ($viaTransfer), which deletes both
+        // halves atomically in one transaction.
+        if (! $viaTransfer && StockTransfer::where('purchase_order_id', $po->id)->exists()) {
             throw ValidationException::withMessages([
                 'purchase' => "Purchase {$po->po_number} cannot be deleted: it belongs to a stock transfer. Use a debit note for returns.",
             ]);

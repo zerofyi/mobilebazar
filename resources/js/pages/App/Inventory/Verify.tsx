@@ -286,34 +286,6 @@ export default function Verify({ kind, detail }: { kind: "unit" | "batch" | "var
                     </CardContent>
                 </Card>
 
-                {/* Stat strip */}
-                {kind !== "variant" && detail.cost && (
-                    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                        {detail.qty ? (
-                            <StatTile
-                                label="Quantity remaining"
-                                value={`${detail.qty.remaining} / ${detail.qty.received}`}
-                                sub={detail.qty.remaining > 0 ? "still in stock" : "fully sold out"}
-                            />
-                        ) : (
-                            <StatTile label="Landed cost" value={<Money amount={detail.cost.landed} />} sub={`Base ₹${detail.cost.base.toLocaleString("en-IN")}`} />
-                        )}
-                        <StatTile
-                            label="Selling price"
-                            value={detail.price?.selling != null ? <Money amount={detail.price.selling} /> : "—"}
-                            sub={detail.qty ? `Landed ₹${detail.cost.landed.toLocaleString("en-IN")} / pc` : undefined}
-                        />
-                        <StatTile
-                            label="Wholesale price"
-                            value={detail.price?.wholesale != null ? <Money amount={detail.price.wholesale} /> : "—"}
-                        />
-                        <StatTile
-                            label="MRP"
-                            value={product?.mrp != null && product.mrp > 0 ? <Money amount={product.mrp} /> : "—"}
-                            sub={estMargin != null ? `Est. margin ${estMargin >= 0 ? "+" : "−"}₹${Math.abs(estMargin).toLocaleString("en-IN")}${estMarginPct != null ? ` (${estMarginPct.toFixed(1)}%)` : ""}` : undefined}
-                        />
-                    </div>
-                )}
                 {kind === "variant" && (
                     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                         <StatTile label="Serialized units" value={(detail.units ?? []).length} />
@@ -389,7 +361,7 @@ export default function Verify({ kind, detail }: { kind: "unit" | "batch" | "var
                                         <ReceiptText className="size-4 text-muted-foreground" />
                                         Sales history ({detail.sales!.length})
                                     </CardTitle>
-                                    {kind === "unit" && (
+                                    {kind === "unit" && detail.own_store !== false && (
                                         <span className={cn("text-xs font-medium", soldProfit >= 0 ? "text-emerald-600" : "text-destructive")}>
                                             Profit {soldProfit >= 0 ? "+" : "−"}₹{Math.abs(soldProfit).toLocaleString("en-IN")}
                                         </span>
@@ -570,6 +542,35 @@ export default function Verify({ kind, detail }: { kind: "unit" | "batch" | "var
                         )}
                     </div>
                 </div>
+
+                {/* Prices — kept at the bottom so costs/margins are not the first thing on screen */}
+                {kind !== "variant" && (
+                    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                        {detail.qty ? (
+                            <StatTile
+                                label="Quantity remaining"
+                                value={`${detail.qty.remaining} / ${detail.qty.received}`}
+                                sub={detail.qty.remaining > 0 ? "still in stock" : "fully sold out"}
+                            />
+                        ) : detail.cost ? (
+                            <StatTile label="Landed cost" value={<Money amount={detail.cost.landed} />} sub={`Base ₹${detail.cost.base.toLocaleString("en-IN")}`} />
+                        ) : null}
+                        <StatTile
+                            label="Selling price"
+                            value={detail.price?.selling != null ? <Money amount={detail.price.selling} /> : "—"}
+                            sub={detail.qty && detail.cost ? `Landed ₹${detail.cost.landed.toLocaleString("en-IN")} / pc` : undefined}
+                        />
+                        <StatTile
+                            label="Wholesale price"
+                            value={detail.price?.wholesale != null ? <Money amount={detail.price.wholesale} /> : "—"}
+                        />
+                        <StatTile
+                            label="MRP"
+                            value={product?.mrp != null && product.mrp > 0 ? <Money amount={product.mrp} /> : "—"}
+                            sub={estMargin != null ? `Est. margin ${estMargin >= 0 ? "+" : "−"}₹${Math.abs(estMargin).toLocaleString("en-IN")}${estMarginPct != null ? ` (${estMarginPct.toFixed(1)}%)` : ""}` : undefined}
+                        />
+                    </div>
+                )}
             </div>
         </>
     );

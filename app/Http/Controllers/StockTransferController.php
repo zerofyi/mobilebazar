@@ -17,6 +17,7 @@ use App\Models\Supplier;
 use App\Services\SaleService;
 use App\Services\StockTransferService;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
@@ -170,6 +171,13 @@ class StockTransferController extends Controller
                     && ! CreditNote::where('invoice_id', $invoice->id)->where('status', 'issued')->exists()
                     && $purchase
                     && ! DebitNote::where('purchase_order_id', $purchase->id)->where('status', 'issued')->exists(),
+                'can_delete'      => Auth::user()->can('transfers.create')
+                    && $row->from_store_id === $store->id
+                    && $row->status === 'completed'
+                    && $invoice
+                    && ! CreditNote::where('invoice_id', $invoice->id)->where('status', 'issued')->exists()
+                    && $purchase
+                    && ! DebitNote::where('purchase_order_id', $purchase->id)->where('status', 'issued')->exists(),
                 'created_by'      => $row->createdBy?->name,
                 'created_at'      => $row->created_at?->toIso8601String(),
                 'dispatched_at'   => $row->dispatched_at?->toIso8601String(),
@@ -292,6 +300,49 @@ class StockTransferController extends Controller
                 . $updated->transfer_number . ' — sale '
                 . $updated->saleInvoice->invoice_number . ' (revision ' . $updated->saleInvoice->revision . ') + purchase '
                 . $updated->purchaseOrder->po_number . ' (revision ' . $updated->purchaseOrder->revision . ').');
+    }
+
+    /**
+     * Delete a transfer outright — full revert of both halves (see
+     * StockTransferService::deleteTransfer). PIN-gated like create/edit,
+     * source store only, and only while every transferred item is still
+     * untouched in the target store and no money moved outside the
+     * transfer settlement — the service enforces all of it.
+     */
+    public function destroy(Request $request, string $transfer): RedirectResponse
+    {
+        $user = Auth::user();
+        $user->loadMissing('ownedStore');
+        $store = $user->ownedStore;
+        abort_unless($store && $store->is_active, 403);
+
+        $row = StockTransfer::query()
+            ->where('uuid', $transfer)
+            ->where('from_store_id', $store->id)
+            ->firstOrFail();
+
+        $pinData = $request->validate([
+            'security_pin' => ['required', 'string', 'size:6'],
+        ]);
+        $this->verifySecurityPin($store, $pinData['security_pin']);
+
+        $number = $row->transfer_number;
+
+        try {
+            $this->transfers->deleteTransfer($store, $user, $row);
+        } catch (ValidationException $e) {
+            return back()->withErrors($e->errors())->withInput();
+        } catch (MonthLockedException $e) {
+            return back()->withErrors(['transfer' => $e->getMessage()])->withInput();
+        } catch (AccountingException $e) {
+            return back()->withErrors(['transfer' => $e->getMessage()])->withInput();
+        }
+
+        return redirect()
+            ->route('app.transfers.index')
+            ->with('success', 'Stock transfer deleted: ' . $number
+                . ' — sale and purchase fully reversed, stock restored to '
+                . $store->name . '.');
     }
 
     /**

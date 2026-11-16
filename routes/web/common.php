@@ -214,6 +214,11 @@ Route::prefix('app')->middleware(['auth', 'verified', 'check'])
         // exists in the manual grant set, and the same staff edit as create.
         Route::get('/{transfer}/edit', [StockTransferController::class, 'edit'])->name('edit')->middleware('can:transfers.create');
         Route::put('/{transfer}', [StockTransferController::class, 'update'])->name('update')->middleware('can:transfers.create');
+        // Full revert of a completed transfer (PIN-gated in the
+        // controller; the service refuses unless every transferred item
+        // is still untouched in the target store and no money moved
+        // outside the transfer settlement).
+        Route::delete('/{transfer}', [StockTransferController::class, 'destroy'])->name('destroy')->middleware('can:transfers.create');
     });
 
     // ── Credit notes (sales returns) ──

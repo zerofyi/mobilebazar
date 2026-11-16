@@ -521,7 +521,7 @@ final class SaleService
         return 'unknown identifier';
     }
 
-    public function deleteSale(Store $store, User $user, Invoice $invoice): void
+    public function deleteSale(Store $store, User $user, Invoice $invoice, bool $viaTransfer = false): void
     {
         Log::info('Deleting sale', [
             'store_id'       => $store->id,
@@ -534,13 +534,13 @@ final class SaleService
             throw MonthLockedException::for($store->id, $invoice->invoice_date->format('Y-m'));
         }
 
-        DB::transaction(function () use ($store, $user, $invoice) {
+        DB::transaction(function () use ($store, $user, $invoice, $viaTransfer) {
             $invoice = Invoice::where('store_id', $store->id)
                 ->where('id', $invoice->id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $this->assertSaleEditable($store, $invoice);
+            $this->assertSaleEditable($store, $invoice, $viaTransfer);
 
             $this->reverseSale($store, $user, $invoice, "Sale {$invoice->invoice_number} deleted");
 

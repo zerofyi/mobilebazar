@@ -1,11 +1,13 @@
-import { Head, Link } from "@inertiajs/react";
-import { ArrowLeftRight, ArrowRight, ExternalLink, FileMinus2, FilePlus2, Pencil } from "lucide-react";
+import { useState } from "react";
+import { Head, Link, router } from "@inertiajs/react";
+import { ArrowLeftRight, ArrowRight, ExternalLink, FileMinus2, FilePlus2, Pencil, Trash2 } from "lucide-react";
 import { dashboard } from "@/routes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { FormatAmount } from "@/components/special/format-amount";
 import { useFlashToast } from "@/hooks/use-flash-toast";
+import SecurityPinModal from "@/components/SecurityPinModal";
 
 interface StoreRef { id: number; name: string; code: string | null }
 
@@ -24,6 +26,7 @@ interface Props {
         transfer_number: string;
         status: string;
         can_edit: boolean;
+        can_delete: boolean;
         direction: "outgoing" | "incoming";
         from_store: StoreRef | null;
         to_store: StoreRef | null;
@@ -82,6 +85,35 @@ export default function Show({ transfer }: Props) {
     useFlashToast();
     const { sale, purchase } = transfer;
 
+    const [pinOpen, setPinOpen] = useState(false);
+    const [pinError, setPinError] = useState<string | null>(null);
+    const [deleting, setDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
+
+    const submitDelete = (pin: string) => {
+        setPinError(null);
+        setDeleteError(null);
+        setDeleting(true);
+        router.delete(`/app/transfers/${transfer.uuid}`, {
+            data: { security_pin: pin },
+            onSuccess: () => setPinOpen(false),
+            onError: (errors) => {
+                if (errors.security_pin) {
+                    setPinError(errors.security_pin as string);
+                } else {
+                    setPinOpen(false);
+                    setDeleteError(
+                        (errors.transfer as string) ??
+                        (errors.invoice as string) ??
+                        (errors.purchase as string) ??
+                        "This transfer could not be deleted.",
+                    );
+                }
+            },
+            onFinish: () => setDeleting(false),
+        });
+    };
+
     return (
         <>
             <Head title={`Transfer ${transfer.transfer_number}`} />
@@ -117,15 +149,38 @@ export default function Show({ transfer }: Props) {
                         This transfer is a bridge between the two documents below — items and prices live on them,
                         not here. The two documents cannot be edited or deleted directly, but the transfer itself
                         can be edited from the source store (change prices, or take an item back) — both documents
-                        are re-posted together. Once a credit note or debit note is issued, the transfer is final.
+                        are re-posted together. While every transferred item is still untouched in the target
+                        store, the transfer can also be deleted completely (PIN required): both documents are
+                        reversed and the stock comes back, as if the transfer never happened. Once a credit note
+                        or debit note is issued, the transfer is final.
                     </p>
-                    {transfer.can_edit && (
-                        <div className="mt-3">
-                            <Button size="sm" asChild>
-                                <Link href={`/app/transfers/${transfer.uuid}/edit`}>
-                                    <Pencil className="mr-1.5 size-3.5" /> Edit transfer
-                                </Link>
-                            </Button>
+                    {(transfer.can_edit || transfer.can_delete) && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                            {transfer.can_edit && (
+                                <Button size="sm" asChild>
+                                    <Link href={`/app/transfers/${transfer.uuid}/edit`}>
+                                        <Pencil className="mr-1.5 size-3.5" /> Edit transfer
+                                    </Link>
+                                </Button>
+                            )}
+                            {transfer.can_delete && (
+                                <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => {
+                                        setPinError(null);
+                                        setDeleteError(null);
+                                        setPinOpen(true);
+                                    }}
+                                >
+                                    <Trash2 className="mr-1.5 size-3.5" /> Delete transfer
+                                </Button>
+                            )}
+                        </div>
+                    )}
+                    {deleteError && (
+                        <div className="mt-3 max-w-2xl rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                            {deleteError}
                         </div>
                     )}
                 </div>
@@ -218,6 +273,17 @@ export default function Show({ transfer }: Props) {
                     </Button>
                 </div>
             </div>
+
+            <SecurityPinModal
+                open={pinOpen}
+                onOpenChange={setPinOpen}
+                onConfirm={submitDelete}
+                title="Delete this transfer?"
+                description={`This fully reverses transfer ${transfer.transfer_number}: the sale and the purchase are deleted, the settlement is voided, and every item returns to ${transfer.from_store?.name ?? "the source store"} — as if the transfer never happened. This only works while all transferred stock is still untouched in ${transfer.to_store?.name ?? "the target store"}. Enter the store's 6-digit security PIN to continue.`}
+                error={pinError}
+                verifying={deleting}
+                confirmLabel="Delete transfer"
+            />
         </>
     );
 }
