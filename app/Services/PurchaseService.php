@@ -338,7 +338,14 @@ final class PurchaseService
                 //    reversed by an edit, so reposting the payload's full
                 //    paid_amount would book that money a second time.
                 $journalData = $data;
-                $journalData['paid_amount'] = max(0.0, $this->r2((float) ($data['paid_amount'] ?? 0)) - $this->supplierPaymentsTotal($po));
+                // The RECORDED paid_amount is the only source here (F3):
+                // the header update above deliberately never writes the
+                // payload's paid fields, so trusting them would let a
+                // touched footer input diverge the JE-PAY journal from the
+                // document with no Payment row behind it. For transfer
+                // purchases this is identically 0 (created unpaid; the
+                // settlement lives entirely in mirrored supplier payments).
+                $journalData['paid_amount'] = max(0.0, $this->r2((float) $po->paid_amount) - $this->supplierPaymentsTotal($po));
                 $this->journal->post($po->fresh(), $store, $user, $journalData, '-R' . $newRevision);
                 $this->summaries->record(SummaryDeltaFactory::forPurchase($store->id, $data));
 
@@ -757,8 +764,9 @@ final class PurchaseService
     }
 
     /**
-     * Selectively rebuild stock: delete editable rows, keep locked rows
-     * untouched, create new rows from the payload (skipping locked IDs).
+     * Selectively rebuild stock: delete only the rows the payload dropped,
+     * keep locked rows untouched, update surviving rows in place, and
+     * create rows only for genuinely new payload entries.
      */
     private function rebuildStockSelective(PurchaseOrder $po, Store $store, User $user, array $lines, array $locked, array $snapshots): void
     {
@@ -793,14 +801,27 @@ final class PurchaseService
                 continue;
             }
 
-            // Remove editable stock rows; locked rows stay.
+            // Remove only the stock rows the payload actually dropped.
+            // Rows that come back with their ID survive and are updated
+            // IN PLACE by recreateLineStock() — same row, same unit ID,
+            // same batch number — so a field the payload does not carry
+            // can never be wiped by omission (the old delete + recreate
+            // reset batch condition to NEW and nulled health / warranty /
+            // prices on every edit). Locked rows stay untouched either way.
+            $payloadUnitIds = collect($payloadLines)
+                ->flatMap(fn ($l) => collect($l['units'] ?? [])->pluck('stock_unit_id'))
+                ->filter()->map(fn ($id) => (int) $id);
+            $payloadBatchIds = collect($payloadLines)
+                ->flatMap(fn ($l) => collect($l['batches'] ?? [])->pluck('stock_batch_id'))
+                ->filter()->map(fn ($id) => (int) $id);
+
             foreach ($item->stockUnits as $unit) {
-                if (! $lockedUnitIds->contains($unit->id)) {
+                if (! $lockedUnitIds->contains($unit->id) && ! $payloadUnitIds->contains($unit->id)) {
                     $this->deleteUnitStock($unit, $store, $snapshots);
                 }
             }
             foreach ($item->stockBatches as $batch) {
-                if (! $lockedBatchIds->contains($batch->id)) {
+                if (! $lockedBatchIds->contains($batch->id) && ! $payloadBatchIds->contains($batch->id)) {
                     $this->deleteBatchStock($po, $batch, $store, $snapshots);
                 }
             }
@@ -890,6 +911,16 @@ final class PurchaseService
                 if (! empty($unitData['stock_unit_id']) && $lockedUnitIds->contains((int) $unitData['stock_unit_id'])) {
                     continue; // Locked — already in DB untouched.
                 }
+                // Surviving unit (still on this item, editable): update it
+                // in place — same ID, same event history. Only a unit with
+                // no surviving row is created fresh.
+                $existingUnit = ! empty($unitData['stock_unit_id'])
+                    ? StockUnit::where('purchase_order_item_id', $item->id)->find((int) $unitData['stock_unit_id'])
+                    : null;
+                if ($existingUnit) {
+                    $this->updateSerializedUnit($item, $existingUnit, $unitData, $user);
+                    continue;
+                }
                 $this->createSerializedUnit($po, $item, $store, $unitData, $user, $snapshots);
             }
         } else {
@@ -912,7 +943,10 @@ final class PurchaseService
                                 $snapshot = $snapshots[$variantId];
                                 $balanceBefore = (int) $snapshot->quantity_on_hand;
                                 $ledger = StockLedger::create([
-                                    'idempotency_key'    => $po->uuid . ':editrev:batchadj:' . $batch->id . ':' . $newReceived,
+                                    // Revision-suffixed (F4): re-editing back to a
+                                    // quantity an earlier edit already used can
+                                    // never collide on the UNIQUE key.
+                                    'idempotency_key'    => $po->uuid . ':editrev:batchadj:' . $batch->id . ':' . $newReceived . ':r' . ($po->revision + 1),
                                     'store_id'           => $store->id,
                                     'product_variant_id' => $variantId,
                                     'stock_batch_id'     => $batch->id,
@@ -931,7 +965,26 @@ final class PurchaseService
                     }
                     continue;
                 }
-                $this->createBulkBatch($po, $item, $store, $batchData, $user, $snapshots);
+                // Surviving batch: update it in place — same row, same
+                // batch number (see updateBulkBatch).
+                $existingBatch = ! empty($batchData['stock_batch_id'])
+                    ? StockBatch::where('purchase_order_item_id', $item->id)->find((int) $batchData['stock_batch_id'])
+                    : null;
+                if ($existingBatch) {
+                    $this->updateBulkBatch($po, $item, $store, $existingBatch, $batchData, $line, $user, $snapshots);
+                    continue;
+                }
+                // Genuinely new batch on an existing line: the batch entry
+                // carries only qty + costs, so inherit the line's batch-level
+                // attributes (condition / health / warranty / prices) — the
+                // same fields the create path reads from the line.
+                $merged = $batchData;
+                foreach (['condition_code', 'overall_health', 'remaining_warranty', 'wholesale_price', 'selling_price'] as $k) {
+                    if (! isset($merged[$k]) && isset($line[$k])) {
+                        $merged[$k] = $line[$k];
+                    }
+                }
+                $this->createBulkBatch($po, $item, $store, $merged, $user, $snapshots);
             }
             // Back-compat: single-quantity bulk line without explicit batches.
             if (empty($line['batches'])) {
@@ -1370,6 +1423,138 @@ final class PurchaseService
         ]);
 
         $this->applyToSnapshot($snapshot, $qty, $ledger->id, null);
+    }
+
+    /**
+     * Update a surviving serialized unit IN PLACE during purchase edit:
+     * same row, same ID, same event history — only the mutable fields move.
+     * Quantity is inherently 1 and the variant cannot change on a line that
+     * has stock (row guards), so no ledger or snapshot entry is needed.
+     * Status returns to 'available': the only non-available units that can
+     * reach this path are transfer-parked ones, which the edit frees.
+     */
+    private function updateSerializedUnit(PurchaseOrderItem $item, StockUnit $unit, array $unitData, User $user): void
+    {
+        $update = [
+            'product_variant_id' => $item->product_variant_id,
+            'manual_item_name'   => $item->manual_item_name,
+            'imei1'              => $this->blankToNull($unitData['imei1'] ?? $unitData['imei_1'] ?? null),
+            'imei2'              => $this->blankToNull($unitData['imei2'] ?? $unitData['imei_2'] ?? null),
+            'serial_number'      => $this->blankToNull($unitData['serial_number'] ?? null),
+            'device_condition'   => strtoupper(trim((string) ($unitData['device_condition_code'] ?? $unit->device_condition))),
+            'overall_health'     => $this->blankToNull($unitData['overall_health'] ?? null) ?? 'super mint',
+            'status'             => 'available',
+            'base_cost'          => $this->r2($unitData['unit_base_cost'] ?? $unitData['base_cost'] ?? $unit->base_cost),
+            'landed_cost'        => $this->r2($unitData['unit_landed_cost'] ?? $unitData['landed_cost'] ?? $unit->landed_cost),
+            'wholesale_price'    => $this->positiveOrNull($unitData['wholesale_price'] ?? null),
+            'selling_price'      => $this->positiveOrNull($unitData['selling_price'] ?? null),
+            'is_margin_scheme'   => (bool) ($unitData['is_margin_scheme'] ?? $item->is_margin_scheme),
+        ];
+
+        // Warranty: overwrite only when the payload actually carries the
+        // warranty fields — an omitted field keeps the recorded value
+        // instead of being nulled (the delete + recreate failure mode).
+        if (array_key_exists('warranty_mode', $unitData) || array_key_exists('warranty_value', $unitData)) {
+            [$activationDate, $warrantyExpiryDate, $remainingWarranty] = $this->warrantyFields($unitData);
+            $update['activation_date']      = $activationDate;
+            $update['warranty_expiry_date'] = $warrantyExpiryDate;
+            $update['remaining_warranty']   = $remainingWarranty;
+        }
+
+        $unit->update($update);
+
+        // Battery health: upsert when a value is sent, remove when the
+        // field is sent empty, leave untouched when it is not sent at all.
+        if (array_key_exists('battery_health_pct', $unitData)) {
+            $pct = $unitData['battery_health_pct'];
+            if ($pct !== null && $pct !== '') {
+                $health = $unit->deviceHealth;
+                if ($health) {
+                    $health->update([
+                        'battery_health_pct' => (int) $pct,
+                        'checked_by'         => $user->id,
+                        'checked_at'         => now(),
+                    ]);
+                } else {
+                    $health = DeviceHealth::create([
+                        'stock_unit_id'      => $unit->id,
+                        'battery_health_pct' => (int) $pct,
+                        'checked_by'         => $user->id,
+                        'checked_at'         => now(),
+                    ]);
+                    $unit->update(['health_id' => $health->id]);
+                }
+            } elseif ($unit->deviceHealth) {
+                $unit->deviceHealth->delete();
+                $unit->update(['health_id' => null]);
+            }
+        }
+    }
+
+    /**
+     * Update a surviving bulk batch IN PLACE during purchase edit: same
+     * row, same batch number, same ID. A quantity change posts ONE
+     * purchase_adjustment ledger entry for the delta (mirroring the
+     * locked-batch path); cost and attribute changes are plain column
+     * updates — the document's journals reverse + repost at header level,
+     * exactly as before. Every field resolves payload batch → payload
+     * line → recorded value, so an omitted field keeps what is stored
+     * instead of being reset (the old delete + recreate path reset
+     * product_condition to NEW and nulled overall_health /
+     * remaining_warranty / wholesale_price / selling_price on EVERY edit,
+     * and averaged multi-batch costs — audit findings F1 + F2).
+     */
+    private function updateBulkBatch(PurchaseOrder $po, PurchaseOrderItem $item, Store $store, StockBatch $batch, array $batchData, array $line, User $user, array $snapshots): void
+    {
+        $soldQty     = (int) $batch->received_qty - (int) $batch->remaining_qty;
+        $newReceived = max($soldQty, (int) ($batchData['quantity'] ?? $batch->received_qty));
+        $delta       = $newReceived - (int) $batch->received_qty;
+
+        $batch->update([
+            'received_qty'       => $newReceived,
+            'remaining_qty'      => $newReceived - $soldQty,
+            'base_cost'          => $this->r2($batchData['base_cost'] ?? $line['base_cost'] ?? $batch->base_cost),
+            'landed_cost'        => $this->r2($batchData['landed_cost'] ?? $line['landed_cost'] ?? $batch->landed_cost),
+            'is_margin_scheme'   => (bool) ($batchData['is_margin_scheme'] ?? $line['is_margin_scheme'] ?? $item->is_margin_scheme),
+            'product_condition'  => strtoupper(trim((string) ($batchData['condition_code'] ?? $line['condition_code'] ?? $batch->product_condition))),
+            'overall_health'     => array_key_exists('overall_health', $batchData)
+                ? $this->blankToNull($batchData['overall_health'])
+                : (array_key_exists('overall_health', $line) ? $this->blankToNull($line['overall_health']) : $batch->overall_health),
+            'remaining_warranty' => array_key_exists('remaining_warranty', $batchData)
+                ? $this->blankToNull($batchData['remaining_warranty'])
+                : (array_key_exists('remaining_warranty', $line) ? $this->blankToNull($line['remaining_warranty']) : $batch->remaining_warranty),
+            'wholesale_price'    => $this->positiveOrNull($batchData['wholesale_price'] ?? $line['wholesale_price'] ?? $batch->wholesale_price),
+            'selling_price'      => $this->positiveOrNull($batchData['selling_price'] ?? $line['selling_price'] ?? $batch->selling_price),
+        ]);
+
+        if ($delta === 0) {
+            return;
+        }
+
+        $variantId = $batch->product_variant_id;
+        if (! $variantId || ! isset($snapshots[$variantId])) {
+            return;
+        }
+
+        $snapshot      = $snapshots[$variantId];
+        $balanceBefore = (int) $snapshot->quantity_on_hand;
+        $ledger = StockLedger::create([
+            // Revision-suffixed (F4): re-editing back to a quantity an
+            // earlier edit already used can never collide on the UNIQUE key.
+            'idempotency_key'    => $po->uuid . ':editrev:batchadj:' . $batch->id . ':' . $newReceived . ':r' . ($po->revision + 1),
+            'store_id'           => $store->id,
+            'product_variant_id' => $variantId,
+            'stock_batch_id'     => $batch->id,
+            'transaction_type'   => 'purchase_adjustment',
+            'quantity_delta'     => $delta,
+            'balance_after'      => $balanceBefore + $delta,
+            'base_cost'          => $batch->base_cost,
+            'landed_cost'        => $batch->landed_cost,
+            'reference_type'     => PurchaseOrderItem::class,
+            'reference_id'       => $item->id,
+            'created_by'         => $user->id,
+        ]);
+        $this->applyToSnapshot($snapshot, $delta, $ledger->id, null);
     }
 
     // | Serialized path: stock_units + events + health + snapshot (by unit count)

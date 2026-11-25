@@ -33,6 +33,11 @@ class UpdatePurchaseRequest extends StorePurchaseRequest
             'lines.*.units.*.stock_unit_id'  => ['nullable', 'integer'],
             'lines.*.batches.*.stock_batch_id' => ['nullable', 'integer'],
             'lines.*.batches.*.quantity'      => ['nullable', 'integer', 'min:0'],
+            // Per-batch costs (F2): without these rules validated() strips
+            // them and a recreated/updated batch falls back to the line's
+            // average cost, corrupting multi-batch items priced per batch.
+            'lines.*.batches.*.base_cost'      => ['nullable', 'numeric', 'min:0'],
+            'lines.*.batches.*.landed_cost'    => ['nullable', 'numeric', 'min:0'],
         ]);
     }
 

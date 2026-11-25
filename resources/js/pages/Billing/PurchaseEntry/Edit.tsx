@@ -382,7 +382,7 @@ function PurchaseEditInner({ purchase }: { purchase: EditPurchase }) {
                         <VendorAndDocMeta locked vendorLocked={false} />
                         <Separator className="mt-6" />
                         <LineItemTable />
-                        <PurchaseSummaryFooter onSubmit={() => requestSubmit()} isSubmitting={isSubmitting} triedSubmit={triedSubmit} errors={errors} isValid={isValid} locked />
+                        <PurchaseSummaryFooter onSubmit={() => requestSubmit()} isSubmitting={isSubmitting} triedSubmit={triedSubmit} errors={errors} isValid={isValid} locked paymentsLocked={purchase.status !== 'draft'} />
                     <SecurityPinModal
                         open={pinOpen}
                         onOpenChange={setPinOpen}

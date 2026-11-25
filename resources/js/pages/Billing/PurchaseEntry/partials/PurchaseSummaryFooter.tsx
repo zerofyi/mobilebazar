@@ -19,10 +19,11 @@ interface Props {
     errors: string[];
     isValid: boolean;
     locked?: boolean;
+    paymentsLocked?: boolean;
 }
 const fmt = (n: number) => n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-export default function PurchaseSummaryFooter({ onSubmit, isSubmitting = false, triedSubmit, errors, isValid, locked = false }: Props) {
+export default function PurchaseSummaryFooter({ onSubmit, isSubmitting = false, triedSubmit, errors, isValid, locked = false, paymentsLocked = false }: Props) {
     const { state, dispatch, subtotal, totalTax, grandTotal, roundOff, dueAmount, flags, vendorIsRegistered, marginLineCount, calculatedRows } = usePurchase();
     const [showTaxBreakdown, setShowTaxBreakdown] = useState(false);
 
@@ -126,17 +127,18 @@ export default function PurchaseSummaryFooter({ onSubmit, isSubmitting = false, 
                             <div className="flex items-center justify-between">
                                 <span className="font-semibold flex items-center"><CreditCard className="size-3.5 mr-1.5 text-primary" /> Record Direct Payment</span>
                                 <label className="flex items-center gap-1.5 text-muted-foreground cursor-pointer select-none">
-                                    <Checkbox checked={state.markAsPaid} onCheckedChange={(c) => { const checked = !!c; dispatch({ type: "SET_MARK_AS_PAID", payload: checked }); if (checked && state.paidAmount === 0) dispatch({ type: "SET_PAID_AMOUNT", payload: Math.round(grandTotal * 100) / 100 }); }} />
+                                    <Checkbox disabled={paymentsLocked} checked={state.markAsPaid} onCheckedChange={(c) => { const checked = !!c; dispatch({ type: "SET_MARK_AS_PAID", payload: checked }); if (checked && state.paidAmount === 0) dispatch({ type: "SET_PAID_AMOUNT", payload: Math.round(grandTotal * 100) / 100 }); }} />
                                     <span>Already Paid</span>
                                 </label>
                             </div>
                             {state.markAsPaid && (
                                 <div className="space-y-2 pt-2 border-t border-border/50">
                                     <div className="grid grid-cols-2 gap-2">
-                                        <div className="space-y-1"><span className="text-[11px] text-muted-foreground">Paid Amount</span><Input type="number" min="0" max={grandTotal} value={state.paidAmount || ""} onChange={(e) => dispatch({ type: "SET_PAID_AMOUNT", payload: Math.max(0, parseFloat(e.target.value) || 0) })} placeholder="0.00" className="h-8 text-xs font-mono" /></div>
-                                        <div className="space-y-1"><span className="text-[11px] text-muted-foreground">Payment Mode</span><Select value={state.paymentMode} onValueChange={(v) => dispatch({ type: "SET_PAYMENT_MODE", payload: v as PaymentMode })}><SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="upi">UPI</SelectItem><SelectItem value="neft">NEFT / RTGS</SelectItem><SelectItem value="cheque">Cheque</SelectItem><SelectItem value="card">Card</SelectItem></SelectContent></Select></div>
+                                        <div className="space-y-1"><span className="text-[11px] text-muted-foreground">Paid Amount</span><Input disabled={paymentsLocked} type="number" min="0" max={grandTotal} value={state.paidAmount || ""} onChange={(e) => dispatch({ type: "SET_PAID_AMOUNT", payload: Math.max(0, parseFloat(e.target.value) || 0) })} placeholder="0.00" className="h-8 text-xs font-mono" /></div>
+                                        <div className="space-y-1"><span className="text-[11px] text-muted-foreground">Payment Mode</span><Select disabled={paymentsLocked} value={state.paymentMode} onValueChange={(v) => dispatch({ type: "SET_PAYMENT_MODE", payload: v as PaymentMode })}><SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="upi">UPI</SelectItem><SelectItem value="neft">NEFT / RTGS</SelectItem><SelectItem value="cheque">Cheque</SelectItem><SelectItem value="card">Card</SelectItem></SelectContent></Select></div>
                                     </div>
                                     <div className="flex justify-between items-center pt-2 border-t border-border/40"><span className="text-muted-foreground font-medium">Balance Due:</span><span className={cn("font-mono font-bold", dueAmount > 0.009 ? "text-destructive" : "text-primary")}>₹ {fmt(dueAmount)}</span></div>
+                                    {paymentsLocked && <p className="text-[10px] leading-relaxed text-muted-foreground">Recorded when this purchase was posted. To change what was paid, use Supplier Payments on the purchase — editing the bill never rewrites recorded payments.</p>}
                                 </div>
                             )}
                         </div>
